@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import {
   Card,
   Table,
@@ -15,10 +15,11 @@ import {
   Col,
   Statistic,
   DatePicker,
-  Checkbox,
   Radio,
   Divider,
   Tooltip,
+  Popconfirm,
+  Empty,
 } from 'antd';
 import {
   CheckSquareOutlined,
@@ -32,9 +33,12 @@ import {
   CalendarOutlined,
   ToolOutlined,
   SyncOutlined,
+  EditOutlined,
+  DeleteOutlined,
+  ApartmentOutlined,
 } from '@ant-design/icons';
 import { useAppStore } from '@/store';
-import type { PatrolRecord, MaintenanceOrder, PatrolDevice } from '@/types';
+import type { PatrolRecord, MaintenanceOrder, PatrolDevice, PatrolRoute } from '@/types';
 import dayjs from 'dayjs';
 
 const { RangePicker } = DatePicker;
@@ -43,26 +47,34 @@ const { TextArea } = Input;
 export default function PatrolRecord() {
   const {
     patrolRecords,
+    patrolRoutes,
     maintenanceOrders,
     devices,
     deviceGroups,
     addPatrolRecordWithOrders,
     createMaintenanceOrder,
     updateMaintenanceStatus,
+    addPatrolRoute,
+    updatePatrolRoute,
+    deletePatrolRoute,
   } = useAppStore();
 
-  const [activeTab, setActiveTab] = useState<'patrol' | 'maintenance'>('patrol');
+  const [activeTab, setActiveTab] = useState<'patrol' | 'maintenance' | 'routes'>('patrol');
   const [checkinModalVisible, setCheckinModalVisible] = useState(false);
   const [detailModalVisible, setDetailModalVisible] = useState(false);
   const [selectedRecord, setSelectedRecord] = useState<PatrolRecord | null>(null);
   const [maintDetailVisible, setMaintDetailVisible] = useState(false);
   const [selectedMaint, setSelectedMaint] = useState<MaintenanceOrder | null>(null);
   const [createMaintVisible, setCreateMaintVisible] = useState(false);
+  const [routeModalVisible, setRouteModalVisible] = useState(false);
+  const [selectedRoute, setSelectedRoute] = useState<PatrolRoute | null>(null);
   const [checkinForm] = Form.useForm();
   const [maintForm] = Form.useForm();
+  const [routeForm] = Form.useForm();
 
   const [patrolDevices, setPatrolDevices] = useState<PatrolDevice[]>([]);
-  const [selectedAreas, setSelectedAreas] = useState<string[]>([]);
+  const [selectedRouteId, setSelectedRouteId] = useState<string>('');
+  const [manualOrderDeviceIds, setManualOrderDeviceIds] = useState<string[]>([]);
 
   const patrolTypeNames: Record<string, string> = {
     morning: '早间巡检',
@@ -118,24 +130,57 @@ export default function PatrolRecord() {
       groupId: d.groupId,
     }));
     setPatrolDevices(allDevices);
-    setSelectedAreas(deviceGroups.map((g) => g.id));
+    setSelectedRouteId('');
+    setManualOrderDeviceIds([]);
     checkinForm.resetFields();
     checkinForm.setFieldsValue({
       type: 'morning',
-      areas: deviceGroups.map((g) => g.id),
+      routeId: '',
       remark: '',
     });
     setCheckinModalVisible(true);
   };
 
-  const handleAreaChange = (areas: string[]) => {
-    setSelectedAreas(areas);
+  const handleRouteChange = (routeId: string) => {
+    setSelectedRouteId(routeId);
+    if (routeId) {
+      const route = patrolRoutes.find((r) => r.id === routeId);
+      if (route) {
+        const routeDevices: PatrolDevice[] = route.deviceIds
+          .map((id) => {
+            const d = devices.find((dev) => dev.id === id);
+            if (!d) return null;
+            return {
+              deviceId: d.id,
+              deviceName: d.name,
+              status: d.status === 'online' ? 'normal' : d.status === 'fault' ? 'fault' : 'offline',
+              note: '',
+              groupId: d.groupId,
+            };
+          })
+          .filter(Boolean) as PatrolDevice[];
+        setPatrolDevices(routeDevices);
+      }
+    } else {
+      const allDevices: PatrolDevice[] = devices.map((d) => ({
+        deviceId: d.id,
+        deviceName: d.name,
+        status: d.status === 'online' ? 'normal' : d.status === 'fault' ? 'fault' : 'offline',
+        note: '',
+        groupId: d.groupId,
+      }));
+      setPatrolDevices(allDevices);
+    }
+    setManualOrderDeviceIds([]);
   };
 
   const handleDeviceStatusChange = (deviceId: string, status: 'normal' | 'fault' | 'offline') => {
     setPatrolDevices((prev) =>
       prev.map((d) => (d.deviceId === deviceId ? { ...d, status } : d))
     );
+    if (status === 'normal') {
+      setManualOrderDeviceIds((prev) => prev.filter((id) => id !== deviceId));
+    }
   };
 
   const handleDeviceNoteChange = (deviceId: string, note: string) => {
@@ -164,6 +209,10 @@ export default function PatrolRecord() {
   };
 
   const handleCreateMaintFromAbnormal = (device: PatrolDevice) => {
+    if (manualOrderDeviceIds.includes(device.deviceId)) {
+      message.info('该设备已手动创建工单，提交时不会重复生成');
+      return;
+    }
     maintForm.resetFields();
     maintForm.setFieldsValue({
       deviceId: device.deviceId,
@@ -174,17 +223,14 @@ export default function PatrolRecord() {
       assignee: '未分配',
     });
     setCreateMaintVisible(true);
+    setManualOrderDeviceIds((prev) => [...prev, device.deviceId]);
   };
 
   const handleSaveCheckin = async () => {
     try {
       const values = await checkinForm.validateFields();
-      
-      const filteredDevices = patrolDevices.filter((d) =>
-        selectedAreas.includes(d.groupId || '')
-      );
 
-      const abnormalDevices = filteredDevices.filter((d) => d.status !== 'normal');
+      const abnormalDevices = patrolDevices.filter((d) => d.status !== 'normal');
 
       const recordData: Omit<PatrolRecord, 'id'> = {
         date: dayjs().format('YYYY-MM-DD'),
@@ -192,17 +238,26 @@ export default function PatrolRecord() {
         inspector: '当前值班员',
         type: values.type,
         status: abnormalDevices.length > 0 ? 'abnormal' : 'normal',
-        devices: filteredDevices,
+        devices: patrolDevices,
         remark: values.remark || '',
         images: [],
       };
 
-      addPatrolRecordWithOrders(recordData, abnormalDevices);
+      const skipIds = values.routeId ? manualOrderDeviceIds : [];
+      addPatrolRecordWithOrders(recordData, abnormalDevices, skipIds);
+
+      const autoGenCount = abnormalDevices.length - manualOrderDeviceIds.filter((id) =>
+        abnormalDevices.some((d) => d.deviceId === id)
+      ).length;
 
       if (abnormalDevices.length > 0) {
-        message.success(
-          `巡检打卡成功，已生成 ${abnormalDevices.length} 张维修工单`
-        );
+        if (manualOrderDeviceIds.length > 0) {
+          message.success(
+            `巡检打卡成功，${manualOrderDeviceIds.length} 台已手动转单，自动生成 ${Math.max(0, autoGenCount)} 张维修工单`
+          );
+        } else {
+          message.success(`巡检打卡成功，已生成 ${abnormalDevices.length} 张维修工单`);
+        }
       } else {
         message.success('巡检打卡成功');
       }
@@ -218,7 +273,7 @@ export default function PatrolRecord() {
     try {
       const values = await maintForm.validateFields();
       const device = devices.find((d) => d.id === values.deviceId);
-      
+
       createMaintenanceOrder({
         title: values.title,
         deviceId: values.deviceId,
@@ -229,6 +284,7 @@ export default function PatrolRecord() {
         assignee: values.assignee,
         creator: '值班员',
         remark: values.remark || '',
+        source: 'manual',
       });
 
       message.success('工单已创建');
@@ -239,9 +295,54 @@ export default function PatrolRecord() {
     }
   };
 
-  const filteredPatrolDevices = patrolDevices.filter((d) =>
-    selectedAreas.includes(d.groupId || '')
-  );
+  const handleAddRoute = () => {
+    setSelectedRoute(null);
+    routeForm.resetFields();
+    routeForm.setFieldsValue({
+      name: '',
+      description: '',
+      area: '',
+      deviceIds: [],
+      sortOrder: patrolRoutes.length + 1,
+    });
+    setRouteModalVisible(true);
+  };
+
+  const handleEditRoute = (route: PatrolRoute) => {
+    setSelectedRoute(route);
+    routeForm.setFieldsValue({
+      name: route.name,
+      description: route.description,
+      area: route.area,
+      deviceIds: route.deviceIds,
+      sortOrder: route.sortOrder,
+    });
+    setRouteModalVisible(true);
+  };
+
+  const handleDeleteRoute = (routeId: string) => {
+    deletePatrolRoute(routeId);
+    message.success('路线已删除');
+  };
+
+  const handleSaveRoute = async () => {
+    try {
+      const values = await routeForm.validateFields();
+
+      if (selectedRoute) {
+        updatePatrolRoute(selectedRoute.id, values);
+        message.success('路线已更新');
+      } else {
+        addPatrolRoute(values);
+        message.success('路线已创建');
+      }
+
+      setRouteModalVisible(false);
+      routeForm.resetFields();
+    } catch (error) {
+      console.error('表单验证失败:', error);
+    }
+  };
 
   const patrolColumns = [
     {
@@ -346,6 +447,20 @@ export default function PatrolRecord() {
       width: 140,
     },
     {
+      title: '来源',
+      dataIndex: 'source',
+      key: 'source',
+      width: 80,
+      render: (s: string) => {
+        const sourceNames: Record<string, string> = {
+          manual: '手动',
+          patrol: '巡检',
+          alarm: '告警',
+        };
+        return <Tag>{sourceNames[s] || '手动'}</Tag>;
+      },
+    },
+    {
       title: '紧急程度',
       dataIndex: 'level',
       key: 'level',
@@ -398,6 +513,74 @@ export default function PatrolRecord() {
     },
   ];
 
+  const routeColumns = [
+    {
+      title: '序号',
+      dataIndex: 'sortOrder',
+      key: 'sortOrder',
+      width: 60,
+    },
+    {
+      title: '路线名称',
+      dataIndex: 'name',
+      key: 'name',
+      render: (text: string) => <span style={{ fontWeight: 500 }}>{text}</span>,
+    },
+    {
+      title: '区域',
+      dataIndex: 'area',
+      key: 'area',
+      width: 140,
+    },
+    {
+      title: '描述',
+      dataIndex: 'description',
+      key: 'description',
+      ellipsis: true,
+    },
+    {
+      title: '设备数量',
+      key: 'deviceCount',
+      width: 100,
+      render: (_: unknown, record: PatrolRoute) => <span>{record.deviceIds.length} 台</span>,
+    },
+    {
+      title: '操作',
+      key: 'action',
+      width: 160,
+      render: (_: unknown, record: PatrolRoute) => (
+        <Space size="small">
+          <Button
+            size="small"
+            icon={<EditOutlined />}
+            onClick={() => handleEditRoute(record)}
+          >
+            编辑
+          </Button>
+          <Popconfirm
+            title="确认删除"
+            description="确定要删除这条巡检路线吗？"
+            onConfirm={() => handleDeleteRoute(record.id)}
+            okText="删除"
+            cancelText="取消"
+            okButtonProps={{ danger: true }}
+          >
+            <Button size="small" danger icon={<DeleteOutlined />}>
+              删除
+            </Button>
+          </Popconfirm>
+        </Space>
+      ),
+    },
+  ];
+
+  const manualOrderCount = useMemo(
+    () => manualOrderDeviceIds.filter((id) =>
+      patrolDevices.some((d) => d.deviceId === id && d.status !== 'normal')
+    ).length,
+    [manualOrderDeviceIds, patrolDevices]
+  );
+
   return (
     <div style={{ padding: 16, height: '100%', overflow: 'auto' }}>
       <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
@@ -437,11 +620,11 @@ export default function PatrolRecord() {
         <Col span={6}>
           <Card size="small">
             <Statistic
-              title="本月巡检总数"
-              value={patrolRecords.length}
-              prefix={<CalendarOutlined />}
+              title="巡检路线数"
+              value={patrolRoutes.length}
+              prefix={<ApartmentOutlined />}
               valueStyle={{ color: '#52c41a' }}
-              suffix="次"
+              suffix="条"
             />
           </Card>
         </Col>
@@ -451,9 +634,10 @@ export default function PatrolRecord() {
         tabList={[
           { key: 'patrol', tab: '巡检记录' },
           { key: 'maintenance', tab: '维修工单' },
+          { key: 'routes', tab: '巡检路线' },
         ]}
         activeTabKey={activeTab}
-        onTabChange={(key) => setActiveTab(key as 'patrol' | 'maintenance')}
+        onTabChange={(key) => setActiveTab(key as 'patrol' | 'maintenance' | 'routes')}
         extra={
           activeTab === 'patrol' ? (
             <Space>
@@ -462,6 +646,10 @@ export default function PatrolRecord() {
                 巡检打卡
               </Button>
             </Space>
+          ) : activeTab === 'routes' ? (
+            <Button type="primary" icon={<PlusOutlined />} onClick={handleAddRoute}>
+              新增路线
+            </Button>
           ) : (
             <Button type="primary" icon={<PlusOutlined />} onClick={handleCreateMaint}>
               创建工单
@@ -487,7 +675,18 @@ export default function PatrolRecord() {
             size="small"
             pagination={{ pageSize: 8 }}
             columns={maintColumns}
-            scroll={{ x: 1000 }}
+            scroll={{ x: 1100 }}
+          />
+        )}
+
+        {activeTab === 'routes' && (
+          <Table
+            dataSource={[...patrolRoutes].sort((a, b) => a.sortOrder - b.sortOrder)}
+            rowKey="id"
+            size="small"
+            pagination={{ pageSize: 8 }}
+            columns={routeColumns}
+            scroll={{ x: 800 }}
           />
         )}
       </Card>
@@ -501,7 +700,7 @@ export default function PatrolRecord() {
         cancelText="取消"
         width={800}
         maskClosable={false}
-        okButtonProps={{ disabled: filteredPatrolDevices.length === 0 }}
+        okButtonProps={{ disabled: patrolDevices.length === 0 }}
       >
         <Form form={checkinForm} layout="vertical">
           <Row gutter={16}>
@@ -522,16 +721,12 @@ export default function PatrolRecord() {
               </Form.Item>
             </Col>
             <Col span={12}>
-              <Form.Item
-                label="巡检区域"
-                name="areas"
-                rules={[{ required: true, message: '请选择巡检区域' }]}
-              >
+              <Form.Item label="巡检路线（可选）" name="routeId">
                 <Select
-                  mode="multiple"
-                  placeholder="请选择巡检区域"
-                  options={deviceGroups.map((g) => ({ value: g.id, label: g.name }))}
-                  onChange={handleAreaChange}
+                  placeholder="选择路线自动带出设备"
+                  allowClear
+                  options={patrolRoutes.map((r) => ({ value: r.id, label: r.name }))}
+                  onChange={handleRouteChange}
                 />
               </Form.Item>
             </Col>
@@ -545,68 +740,81 @@ export default function PatrolRecord() {
                   {abnormalDevicesCount} 台异常
                 </Tag>
               )}
+              {manualOrderCount > 0 && (
+                <Tag color="blue">
+                  {manualOrderCount} 台已手动转单
+                </Tag>
+              )}
             </Space>
           </Divider>
 
           <div style={{ maxHeight: 300, overflow: 'auto', marginBottom: 16 }}>
-            {filteredPatrolDevices.length === 0 ? (
-              <div style={{ textAlign: 'center', color: '#999', padding: 40 }}>
-                请先选择巡检区域
-              </div>
+            {patrolDevices.length === 0 ? (
+              <Empty description="暂无检查设备" style={{ padding: 40 }} />
             ) : (
               <List
                 size="small"
-                dataSource={filteredPatrolDevices}
-                renderItem={(device) => (
-                  <List.Item
-                    key={device.deviceId}
-                    style={{
-                      padding: '12px 16px',
-                      background: device.status !== 'normal' ? '#fff1f0' : '#fff',
-                      borderLeft: device.status !== 'normal' ? '3px solid #f5222d' : 'none',
-                    }}
-                  >
-                    <List.Item.Meta
-                      title={device.deviceName}
-                      description={
-                        <Input
-                          size="small"
-                          placeholder="添加备注（可选）"
-                          value={device.note}
-                          onChange={(e) => handleDeviceNoteChange(device.deviceId, e.target.value)}
-                          style={{ width: 300 }}
-                        />
-                      }
-                    />
-                    <Space size="middle">
-                      <Radio.Group
-                        size="small"
-                        value={device.status}
-                        onChange={(e) => handleDeviceStatusChange(device.deviceId, e.target.value)}
-                      >
-                        <Radio.Button value="normal">正常</Radio.Button>
-                        <Radio.Button value="fault">故障</Radio.Button>
-                        <Radio.Button value="offline">离线</Radio.Button>
-                      </Radio.Group>
-                      {device.status !== 'normal' && (
-                        <Tooltip title="快速创建工单">
-                          <Button
+                dataSource={patrolDevices}
+                renderItem={(device) => {
+                  const isManualOrder = manualOrderDeviceIds.includes(device.deviceId);
+                  return (
+                    <List.Item
+                      key={device.deviceId}
+                      style={{
+                        padding: '12px 16px',
+                        background: device.status !== 'normal' ? '#fff1f0' : '#fff',
+                        borderLeft: device.status !== 'normal' ? '3px solid #f5222d' : 'none',
+                      }}
+                    >
+                      <List.Item.Meta
+                        title={
+                          <Space>
+                            <span>{device.deviceName}</span>
+                            {isManualOrder && device.status !== 'normal' && (
+                              <Tag color="blue">已手动转单</Tag>
+                            )}
+                          </Space>
+                        }
+                        description={
+                          <Input
                             size="small"
-                            type="primary"
-                            danger
-                            icon={<ToolOutlined />}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleCreateMaintFromAbnormal(device);
-                            }}
-                          >
-                            转工单
-                          </Button>
-                        </Tooltip>
-                      )}
-                    </Space>
-                  </List.Item>
-                )}
+                            placeholder="添加备注（可选）"
+                            value={device.note}
+                            onChange={(e) => handleDeviceNoteChange(device.deviceId, e.target.value)}
+                            style={{ width: 300 }}
+                          />
+                        }
+                      />
+                      <Space size="middle">
+                        <Radio.Group
+                          size="small"
+                          value={device.status}
+                          onChange={(e) => handleDeviceStatusChange(device.deviceId, e.target.value)}
+                        >
+                          <Radio.Button value="normal">正常</Radio.Button>
+                          <Radio.Button value="fault">故障</Radio.Button>
+                          <Radio.Button value="offline">离线</Radio.Button>
+                        </Radio.Group>
+                        {device.status !== 'normal' && (
+                          <Tooltip title={isManualOrder ? '已创建工单，点击可重新创建' : '快速创建工单'}>
+                            <Button
+                              size="small"
+                              type={isManualOrder ? 'default' : 'primary'}
+                              danger={!isManualOrder}
+                              icon={<ToolOutlined />}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleCreateMaintFromAbnormal(device);
+                              }}
+                            >
+                              {isManualOrder ? '重新转单' : '转工单'}
+                            </Button>
+                          </Tooltip>
+                        )}
+                      </Space>
+                    </List.Item>
+                  );
+                }}
               />
             )}
           </div>
@@ -627,7 +835,10 @@ export default function PatrolRecord() {
               }}
             >
               <ExclamationCircleOutlined style={{ marginRight: 4 }} />
-              检测到 {abnormalDevicesCount} 台异常设备，提交后将自动生成对应维修工单
+              检测到 {abnormalDevicesCount} 台异常设备
+              {manualOrderCount > 0
+                ? `，其中 ${manualOrderCount} 台已手动转单，将自动生成 ${Math.max(0, abnormalDevicesCount - manualOrderCount)} 张工单`
+                : '，提交后将自动生成对应维修工单'}
             </div>
           )}
         </Form>
@@ -727,6 +938,9 @@ export default function PatrolRecord() {
                 <Tag color={maintStatusColors[selectedMaint.status]}>
                   {maintStatusNames[selectedMaint.status]}
                 </Tag>
+                <Tag>
+                  {selectedMaint.source === 'patrol' ? '巡检来源' : selectedMaint.source === 'alarm' ? '告警来源' : '手动创建'}
+                </Tag>
                 <span style={{ color: '#999' }}>设备: {selectedMaint.deviceName}</span>
               </Space>
             </div>
@@ -823,6 +1037,67 @@ export default function PatrolRecord() {
           </Row>
           <Form.Item label="备注" name="remark">
             <TextArea rows={2} placeholder="其他备注信息（可选）" />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        title={selectedRoute ? '编辑巡检路线' : '新增巡检路线'}
+        open={routeModalVisible}
+        onCancel={() => setRouteModalVisible(false)}
+        onOk={handleSaveRoute}
+        okText="保存"
+        cancelText="取消"
+        width={500}
+        maskClosable={false}
+      >
+        <Form form={routeForm} layout="vertical">
+          <Row gutter={16}>
+            <Col span={16}>
+              <Form.Item
+                label="路线名称"
+                name="name"
+                rules={[{ required: true, message: '请输入路线名称' }]}
+              >
+                <Input placeholder="请输入路线名称" />
+              </Form.Item>
+            </Col>
+            <Col span={8}>
+              <Form.Item
+                label="排序"
+                name="sortOrder"
+                rules={[{ required: true, message: '请输入排序号' }]}
+              >
+                <Input type="number" placeholder="序号" />
+              </Form.Item>
+            </Col>
+          </Row>
+          <Form.Item
+            label="所属区域"
+            name="area"
+            rules={[{ required: true, message: '请选择所属区域' }]}
+          >
+            <Select
+              placeholder="请选择所属区域"
+              options={deviceGroups.map((g) => ({ value: g.name, label: g.name }))}
+            />
+          </Form.Item>
+          <Form.Item
+            label="路线描述"
+            name="description"
+          >
+            <TextArea rows={2} placeholder="请描述路线巡检内容" />
+          </Form.Item>
+          <Form.Item
+            label="巡检设备"
+            name="deviceIds"
+            rules={[{ required: true, message: '请至少选择一台设备' }]}
+          >
+            <Select
+              mode="multiple"
+              placeholder="请选择该路线包含的设备"
+              options={devices.map((d) => ({ value: d.id, label: d.name }))}
+            />
           </Form.Item>
         </Form>
       </Modal>

@@ -12,12 +12,12 @@ import {
   List,
   message,
   Tabs,
-  Image,
   Descriptions,
   Timeline,
   Tooltip,
   Upload,
   Form,
+  Popconfirm,
 } from 'antd';
 import {
   FolderOpenOutlined,
@@ -32,6 +32,9 @@ import {
   CheckOutlined,
   RollbackOutlined,
   ArrowUpOutlined,
+  CheckCircleOutlined,
+  CloseCircleOutlined,
+  ClockCircleOutlined,
 } from '@ant-design/icons';
 import { useAppStore } from '@/store';
 import type { ContentItem, ContentVersion } from '@/types';
@@ -64,12 +67,26 @@ const statusColors: Record<string, string> = {
   published: 'green',
   draft: 'orange',
   archived: 'default',
+  pending_review: 'gold',
 };
 
 const statusNames: Record<string, string> = {
   published: '已上架',
   draft: '草稿',
   archived: '已归档',
+  pending_review: '待审核',
+};
+
+const reviewStatusNames: Record<string, string> = {
+  pending: '待审核',
+  approved: '审核通过',
+  rejected: '审核驳回',
+};
+
+const reviewStatusColors: Record<string, string> = {
+  pending: 'gold',
+  approved: 'green',
+  rejected: 'red',
 };
 
 const typeThumbnails: Record<string, string> = {
@@ -80,15 +97,26 @@ const typeThumbnails: Record<string, string> = {
 };
 
 export default function ContentLibrary() {
-  const { contents, publishContent, rollbackContent, addContent } = useAppStore();
+  const {
+    contents,
+    publishContent,
+    rollbackContent,
+    addContent,
+    submitContentReview,
+    approveContent,
+    rejectContent,
+  } = useAppStore();
   const [selectedContent, setSelectedContent] = useState<ContentItem | null>(null);
   const [previewVisible, setPreviewVisible] = useState(false);
   const [versionVisible, setVersionVisible] = useState(false);
   const [uploadVisible, setUploadVisible] = useState(false);
+  const [reviewVisible, setReviewVisible] = useState(false);
+  const [reviewType, setReviewType] = useState<'approve' | 'reject'>('approve');
   const [filterType, setFilterType] = useState<string>('all');
   const [filterStatus, setFilterStatus] = useState<string>('all');
   const [searchText, setSearchText] = useState('');
   const [uploadForm] = Form.useForm();
+  const [reviewForm] = Form.useForm();
 
   const filteredContents = contents.filter((c) => {
     const matchType = filterType === 'all' || c.type === filterType;
@@ -96,6 +124,8 @@ export default function ContentLibrary() {
     const matchSearch = !searchText || c.name.includes(searchText) || c.description.includes(searchText);
     return matchType && matchStatus && matchSearch;
   });
+
+  const getCurrentContent = (id: string) => contents.find((c) => c.id === id) || null;
 
   const handlePreview = (content: ContentItem) => {
     setSelectedContent(content);
@@ -110,6 +140,10 @@ export default function ContentLibrary() {
   const handlePublish = (contentId: string) => {
     publishContent(contentId);
     message.success('素材已上架');
+    const updated = getCurrentContent(contentId);
+    if (updated && selectedContent?.id === contentId) {
+      setSelectedContent(updated);
+    }
   };
 
   const handleRollback = (version: string) => {
@@ -117,10 +151,48 @@ export default function ContentLibrary() {
       rollbackContent(selectedContent.id, version);
       message.success('已回退到版本 ' + version);
       setVersionVisible(false);
-      const updatedContent = contents.find((c) => c.id === selectedContent.id);
-      if (updatedContent) {
-        setSelectedContent(updatedContent);
+      const updated = getCurrentContent(selectedContent.id);
+      if (updated) {
+        setSelectedContent(updated);
       }
+    }
+  };
+
+  const handleSubmitReview = (contentId: string) => {
+    submitContentReview(contentId);
+    message.success('已提交审核');
+    const updated = getCurrentContent(contentId);
+    if (updated && selectedContent?.id === contentId) {
+      setSelectedContent(updated);
+    }
+  };
+
+  const handleOpenReview = (type: 'approve' | 'reject') => {
+    setReviewType(type);
+    reviewForm.resetFields();
+    setReviewVisible(true);
+  };
+
+  const handleSaveReview = async () => {
+    if (!selectedContent) return;
+    try {
+      const values = await reviewForm.validateFields();
+
+      if (reviewType === 'approve') {
+        approveContent(selectedContent.id, values.note);
+        message.success('审核通过');
+      } else {
+        rejectContent(selectedContent.id, values.note);
+        message.success('已驳回');
+      }
+
+      setReviewVisible(false);
+      const updated = getCurrentContent(selectedContent.id);
+      if (updated) {
+        setSelectedContent(updated);
+      }
+    } catch (error) {
+      console.error('表单验证失败:', error);
     }
   };
 
@@ -136,7 +208,7 @@ export default function ContentLibrary() {
   const handleSaveUpload = async () => {
     try {
       const values = await uploadForm.validateFields();
-      
+
       const newVersion: ContentVersion = {
         version: '1.0',
         uploader: '当前值班员',
@@ -165,6 +237,58 @@ export default function ContentLibrary() {
       console.error('表单验证失败:', error);
     }
   };
+
+  const renderVersionItem = (v: ContentVersion, isCurrent: boolean) => (
+    <div style={{ paddingBottom: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+        <Space>
+          <span style={{ fontWeight: 'bold' }}>{v.version}</span>
+          {isCurrent && <Tag color="green" icon={<CheckOutlined />}>当前版本</Tag>}
+          {v.reviewStatus && (
+            <Tag color={reviewStatusColors[v.reviewStatus]} icon={
+              v.reviewStatus === 'approved' ? <CheckCircleOutlined /> :
+              v.reviewStatus === 'rejected' ? <CloseCircleOutlined /> :
+              <ClockCircleOutlined />
+            }>
+              {reviewStatusNames[v.reviewStatus]}
+            </Tag>
+          )}
+        </Space>
+        {!isCurrent && (
+          <Button
+            size="small"
+            icon={<RollbackOutlined />}
+            onClick={() => handleRollback(v.version)}
+          >
+            回退到此版本
+          </Button>
+        )}
+      </div>
+      <div style={{ color: '#666', fontSize: 13, marginBottom: 4 }}>{v.note}</div>
+      <div style={{ color: '#999', fontSize: 12, marginBottom: 4 }}>
+        {v.uploader} · {v.uploadTime} · {v.size}
+      </div>
+      {v.reviewStatus && (
+        <div
+          style={{
+            marginTop: 8,
+            padding: 8,
+            background: v.reviewStatus === 'rejected' ? '#fff1f0' : '#f6ffed',
+            borderRadius: 4,
+            fontSize: 12,
+            color: '#666',
+          }}
+        >
+          <div style={{ marginBottom: 2 }}>
+            <span style={{ fontWeight: 'bold' }}>审核信息</span>
+          </div>
+          <div>审核人: {v.reviewer || '-'}</div>
+          <div>审核时间: {v.reviewTime || '-'}</div>
+          <div>审核备注: {v.reviewNote || '-'}</div>
+        </div>
+      )}
+    </div>
+  );
 
   return (
     <div style={{ padding: 16, height: '100%', overflow: 'auto' }}>
@@ -202,11 +326,12 @@ export default function ContentLibrary() {
             <Select
               defaultValue="all"
               size="small"
-              style={{ width: 100 }}
+              style={{ width: 110 }}
               onChange={setFilterStatus}
               options={[
                 { value: 'all', label: '全部状态' },
                 { value: 'published', label: '已上架' },
+                { value: 'pending_review', label: '待审核' },
                 { value: 'draft', label: '草稿' },
                 { value: 'archived', label: '已归档' },
               ]}
@@ -242,24 +367,12 @@ export default function ContentLibrary() {
                     alt={content.name}
                     style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                   />
-                  <div
-                    style={{
-                      position: 'absolute',
-                      top: 8,
-                      left: 8,
-                    }}
-                  >
+                  <div style={{ position: 'absolute', top: 8, left: 8 }}>
                     <Tag color={typeColors[content.type]} icon={typeIcons[content.type]}>
                       {typeNames[content.type]}
                     </Tag>
                   </div>
-                  <div
-                    style={{
-                      position: 'absolute',
-                      top: 8,
-                      right: 8,
-                    }}
-                  >
+                  <div style={{ position: 'absolute', top: 8, right: 8 }}>
                     <Tag color={statusColors[content.status]}>
                       {statusNames[content.status]}
                     </Tag>
@@ -284,20 +397,54 @@ export default function ContentLibrary() {
                   </div>
                 </div>
                 <div style={{ padding: 12 }}>
-                  <div style={{ fontWeight: 500, marginBottom: 4, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  <div
+                    style={{
+                      fontWeight: 500,
+                      marginBottom: 4,
+                      whiteSpace: 'nowrap',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                    }}
+                  >
                     {content.name}
                   </div>
                   <div style={{ color: '#999', fontSize: 12, marginBottom: 8 }}>
                     {content.description}
                   </div>
-                  <Space size="small">
-                    <Button size="small" icon={<EyeOutlined />} onClick={(e) => { e.stopPropagation(); handlePreview(content); }}>
+                  <Space size="small" wrap>
+                    <Button
+                      size="small"
+                      icon={<EyeOutlined />}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handlePreview(content);
+                      }}
+                    >
                       预览
                     </Button>
-                    <Button size="small" icon={<HistoryOutlined />} onClick={(e) => { e.stopPropagation(); handleViewVersions(content); }}>
+                    <Button
+                      size="small"
+                      icon={<HistoryOutlined />}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleViewVersions(content);
+                      }}
+                    >
                       版本
                     </Button>
-                    {content.status !== 'published' && (
+                    {content.status === 'draft' && (
+                      <Button
+                        size="small"
+                        icon={<ClockCircleOutlined />}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleSubmitReview(content.id);
+                        }}
+                      >
+                        提交审核
+                      </Button>
+                    )}
+                    {content.status === 'draft' && (
                       <Button
                         size="small"
                         type="primary"
@@ -308,6 +455,20 @@ export default function ContentLibrary() {
                         }}
                       >
                         上架
+                      </Button>
+                    )}
+                    {content.status === 'pending_review' && (
+                      <Button
+                        size="small"
+                        type="primary"
+                        danger
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setSelectedContent(content);
+                          handleOpenReview('approve');
+                        }}
+                      >
+                        审核
                       </Button>
                     )}
                   </Space>
@@ -356,7 +517,9 @@ export default function ContentLibrary() {
               <Descriptions.Item label="当前版本">{selectedContent.version}</Descriptions.Item>
               <Descriptions.Item label="文件大小">{selectedContent.size}</Descriptions.Item>
               <Descriptions.Item label="状态">
-                <Tag color={statusColors[selectedContent.status]}>{statusNames[selectedContent.status]}</Tag>
+                <Tag color={statusColors[selectedContent.status]}>
+                  {statusNames[selectedContent.status]}
+                </Tag>
               </Descriptions.Item>
               <Descriptions.Item label="上传时间">{selectedContent.uploadTime}</Descriptions.Item>
               <Descriptions.Item label="上传者">{selectedContent.uploader}</Descriptions.Item>
@@ -369,26 +532,57 @@ export default function ContentLibrary() {
               <Descriptions.Item label="描述" span={2}>{selectedContent.description}</Descriptions.Item>
             </Descriptions>
             <div style={{ marginTop: 16, textAlign: 'right' }}>
-              <Space>
-                <Button icon={<HistoryOutlined />} onClick={() => {
-                  const current = contents.find((c) => c.id === selectedContent.id);
-                  if (current) {
-                    setSelectedContent(current);
-                  }
-                  setPreviewVisible(false);
-                  setVersionVisible(true);
-                }}>
+              <Space wrap>
+                <Button
+                  icon={<HistoryOutlined />}
+                  onClick={() => {
+                    const current = getCurrentContent(selectedContent.id);
+                    if (current) {
+                      setSelectedContent(current);
+                    }
+                    setPreviewVisible(false);
+                    setVersionVisible(true);
+                  }}
+                >
                   查看版本
                 </Button>
-                {selectedContent.status !== 'published' && (
+                {selectedContent.status === 'draft' && (
+                  <Button
+                    icon={<ClockCircleOutlined />}
+                    onClick={() => {
+                      handleSubmitReview(selectedContent.id);
+                      const updated = getCurrentContent(selectedContent.id);
+                      if (updated) {
+                        setSelectedContent(updated);
+                      }
+                    }}
+                  >
+                    提交审核
+                  </Button>
+                )}
+                {selectedContent.status === 'draft' && (
                   <Button type="primary" icon={<ArrowUpOutlined />} onClick={() => {
                     handlePublish(selectedContent.id);
-                    const updated = contents.find((c) => c.id === selectedContent.id);
-                    if (updated) {
-                      setSelectedContent({ ...updated, status: 'published' });
-                    }
                   }}>
                     立即上架
+                  </Button>
+                )}
+                {selectedContent.status === 'pending_review' && (
+                  <Button
+                    type="primary"
+                    icon={<CheckCircleOutlined />}
+                    onClick={() => handleOpenReview('approve')}
+                  >
+                    审核通过
+                  </Button>
+                )}
+                {selectedContent.status === 'pending_review' && (
+                  <Button
+                    danger
+                    icon={<CloseCircleOutlined />}
+                    onClick={() => handleOpenReview('reject')}
+                  >
+                    审核驳回
                   </Button>
                 )}
               </Space>
@@ -405,7 +599,7 @@ export default function ContentLibrary() {
           setSelectedContent(null);
         }}
         footer={null}
-        width={600}
+        width={650}
         maskClosable={false}
       >
         {selectedContent && (
@@ -415,37 +609,38 @@ export default function ContentLibrary() {
               <Tag color="blue" style={{ marginLeft: 8 }}>当前: {selectedContent.version}</Tag>
             </div>
             <Timeline
-              items={selectedContent.versions.map((v, index) => ({
+              items={selectedContent.versions.map((v) => ({
                 color: v.version === selectedContent.version ? 'green' : 'blue',
-                children: (
-                  <div style={{ paddingBottom: 16 }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-                      <Space>
-                        <span style={{ fontWeight: 'bold' }}>{v.version}</span>
-                        {v.version === selectedContent.version && (
-                          <Tag color="green" icon={<CheckOutlined />}>当前版本</Tag>
-                        )}
-                      </Space>
-                      {v.version !== selectedContent.version && (
-                        <Button
-                          size="small"
-                          icon={<RollbackOutlined />}
-                          onClick={() => handleRollback(v.version)}
-                        >
-                          回退到此版本
-                        </Button>
-                      )}
-                    </div>
-                    <div style={{ color: '#666', fontSize: 13, marginBottom: 4 }}>{v.note}</div>
-                    <div style={{ color: '#999', fontSize: 12 }}>
-                      {v.uploader} · {v.uploadTime} · {v.size}
-                    </div>
-                  </div>
-                ),
+                children: renderVersionItem(v, v.version === selectedContent.version),
               }))}
             />
           </div>
         )}
+      </Modal>
+
+      <Modal
+        title={reviewType === 'approve' ? '审核通过' : '审核驳回'}
+        open={reviewVisible}
+        onCancel={() => setReviewVisible(false)}
+        onOk={handleSaveReview}
+        okText={reviewType === 'approve' ? '通过' : '驳回'}
+        okButtonProps={{ danger: reviewType === 'reject' }}
+        cancelText="取消"
+        width={450}
+        maskClosable={false}
+      >
+        <Form form={reviewForm} layout="vertical">
+          <Form.Item
+            label="审核备注"
+            name="note"
+            rules={reviewType === 'reject' ? [{ required: true, message: '请输入驳回原因' }] : []}
+          >
+            <TextArea
+              rows={4}
+              placeholder={reviewType === 'approve' ? '请输入审核备注（可选）' : '请输入驳回原因'}
+            />
+          </Form.Item>
+        </Form>
       </Modal>
 
       <Modal

@@ -13,6 +13,7 @@ import {
   DailyReport,
   DeviceStatus,
   PatrolDevice,
+  PatrolRoute,
 } from '@/types';
 import {
   mockDevices,
@@ -26,6 +27,7 @@ import {
   mockMaintenanceOrders,
   mockOperationLogs,
   mockDailyReports,
+  mockPatrolRoutes,
 } from '@/mock';
 import dayjs from 'dayjs';
 
@@ -35,10 +37,14 @@ export const OPERATION_TYPES = {
   SCHEDULE_ADD: '排期新增',
   SCHEDULE_EDIT: '排期编辑',
   SCHEDULE_DELETE: '排期删除',
+  SCHEDULE_SYNC: '排期同步',
   EXHIBITION_SWITCH: '展览切换',
   CONTENT_PUBLISH: '素材上架',
   CONTENT_ROLLBACK: '版本回退',
   CONTENT_UPLOAD: '素材上传',
+  CONTENT_SUBMIT_REVIEW: '提交审核',
+  CONTENT_APPROVE: '审核通过',
+  CONTENT_REJECT: '审核驳回',
   PLAYLIST_SYNC: '播放列表同步',
   ALARM_HANDLE: '告警处理',
   DEVICE_MARK_OFFLINE: '设备离线标记',
@@ -46,6 +52,9 @@ export const OPERATION_TYPES = {
   MAINTENANCE_CREATE: '维修工单创建',
   MAINTENANCE_UPDATE: '工单状态更新',
   PATROL_CHECKIN: '巡检打卡',
+  PATROL_ROUTE_ADD: '巡检路线新增',
+  PATROL_ROUTE_EDIT: '巡检路线编辑',
+  PATROL_ROUTE_DELETE: '巡检路线删除',
   ENERGY_SAVING: '节能模式',
   EMERGENCY_MODE: '应急模式',
   EMERGENCY_BROADCAST: '应急广播',
@@ -60,6 +69,7 @@ interface AppState {
   playlists: Playlist[];
   alarms: AlarmItem[];
   patrolRecords: PatrolRecord[];
+  patrolRoutes: PatrolRoute[];
   maintenanceOrders: MaintenanceOrder[];
   operationLogs: OperationLog[];
   dailyReports: DailyReport[];
@@ -77,12 +87,22 @@ interface AppState {
   publishContent: (contentId: string) => void;
   rollbackContent: (contentId: string, version: string) => void;
   addContent: (content: Omit<ContentItem, 'id' | 'uploadTime' | 'versions'> & { note: string }) => void;
+  submitContentReview: (contentId: string) => void;
+  approveContent: (contentId: string, reviewNote?: string) => void;
+  rejectContent: (contentId: string, reviewNote: string) => void;
 
   addSchedule: (schedule: Omit<ScheduleItem, 'id'>) => void;
   updateSchedule: (scheduleId: string, schedule: Partial<ScheduleItem>) => void;
   deleteSchedule: (scheduleId: string) => void;
   toggleSchedule: (scheduleId: string) => void;
+  syncSchedule: (scheduleId: string) => void;
   syncPlaylist: (playlistId: string) => void;
+  checkScheduleConflict: (
+    deviceIds: string[],
+    startTime: string,
+    endTime: string,
+    excludeScheduleId?: string
+  ) => { conflict: boolean; conflictingSchedules: ScheduleItem[] };
 
   handleAlarm: (alarmId: string, handler: string, note: string) => void;
   markOffline: (deviceId: string) => void;
@@ -94,8 +114,12 @@ interface AppState {
   addPatrolRecord: (record: Omit<PatrolRecord, 'id'>) => void;
   addPatrolRecordWithOrders: (
     record: Omit<PatrolRecord, 'id'>,
-    abnormalDevices: PatrolDevice[]
+    abnormalDevices: PatrolDevice[],
+    skipDeviceIds?: string[]
   ) => void;
+  addPatrolRoute: (route: Omit<PatrolRoute, 'id'>) => void;
+  updatePatrolRoute: (routeId: string, route: Partial<PatrolRoute>) => void;
+  deletePatrolRoute: (routeId: string) => void;
 
   addOperationLog: (log: Omit<OperationLog, 'id'>) => void;
 
@@ -116,6 +140,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   playlists: mockPlaylists,
   alarms: mockAlarms,
   patrolRecords: mockPatrolRecords,
+  patrolRoutes: mockPatrolRoutes,
   maintenanceOrders: mockMaintenanceOrders,
   operationLogs: mockOperationLogs,
   dailyReports: mockDailyReports,
@@ -331,6 +356,105 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
   },
 
+  submitContentReview: (contentId) => {
+    const content = get().contents.find((c) => c.id === contentId);
+
+    set((state) => ({
+      contents: state.contents.map((c) =>
+        c.id === contentId
+          ? {
+              ...c,
+              status: 'pending_review' as const,
+              versions: c.versions.map((v) =>
+                v.version === c.version
+                  ? { ...v, reviewStatus: 'pending' as const }
+                  : v
+              ),
+            }
+          : c
+      ),
+    }));
+
+    get().addOperationLog({
+      time: dayjs().format('YYYY-MM-DD HH:mm:ss'),
+      operator: '值班员',
+      type: OPERATION_TYPES.CONTENT_SUBMIT_REVIEW,
+      target: content?.name || contentId,
+      detail: '提交素材审核',
+      result: 'success',
+    });
+  },
+
+  approveContent: (contentId, reviewNote) => {
+    const content = get().contents.find((c) => c.id === contentId);
+
+    set((state) => ({
+      contents: state.contents.map((c) =>
+        c.id === contentId
+          ? {
+              ...c,
+              status: 'draft' as const,
+              versions: c.versions.map((v) =>
+                v.version === c.version
+                  ? {
+                      ...v,
+                      reviewStatus: 'approved' as const,
+                      reviewer: '审核员',
+                      reviewTime: dayjs().format('YYYY-MM-DD HH:mm:ss'),
+                      reviewNote: reviewNote || '审核通过',
+                    }
+                  : v
+              ),
+            }
+          : c
+      ),
+    }));
+
+    get().addOperationLog({
+      time: dayjs().format('YYYY-MM-DD HH:mm:ss'),
+      operator: '审核员',
+      type: OPERATION_TYPES.CONTENT_APPROVE,
+      target: content?.name || contentId,
+      detail: `审核通过${reviewNote ? '，备注: ' + reviewNote : ''}`,
+      result: 'success',
+    });
+  },
+
+  rejectContent: (contentId, reviewNote) => {
+    const content = get().contents.find((c) => c.id === contentId);
+
+    set((state) => ({
+      contents: state.contents.map((c) =>
+        c.id === contentId
+          ? {
+              ...c,
+              status: 'draft' as const,
+              versions: c.versions.map((v) =>
+                v.version === c.version
+                  ? {
+                      ...v,
+                      reviewStatus: 'rejected' as const,
+                      reviewer: '审核员',
+                      reviewTime: dayjs().format('YYYY-MM-DD HH:mm:ss'),
+                      reviewNote: reviewNote || '审核驳回',
+                    }
+                  : v
+              ),
+            }
+          : c
+      ),
+    }));
+
+    get().addOperationLog({
+      time: dayjs().format('YYYY-MM-DD HH:mm:ss'),
+      operator: '审核员',
+      type: OPERATION_TYPES.CONTENT_REJECT,
+      target: content?.name || contentId,
+      detail: `审核驳回，原因: ${reviewNote}`,
+      result: 'success',
+    });
+  },
+
   addSchedule: (schedule) => {
     const newSchedule: ScheduleItem = {
       ...schedule,
@@ -414,7 +538,46 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
   },
 
-  syncPlaylist: (playlistId) => {
+  syncSchedule: (scheduleId) => {
+    const schedule = get().schedules.find((s) => s.id === scheduleId);
+    const exhibition = get().exhibitions.find((e) => e.id === schedule?.exhibitionId);
+    const deviceNames = get().devices
+      .filter((d) => schedule?.deviceIds.includes(d.id))
+      .map((d) => d.name)
+      .join('、');
+
+    get().addOperationLog({
+      time: dayjs().format('YYYY-MM-DD HH:mm:ss'),
+      operator: '值班员',
+      type: OPERATION_TYPES.SCHEDULE_SYNC,
+      target: schedule?.name || scheduleId,
+      detail: `同步排期到设备，展览: ${exhibition?.name || ''}，时间: ${schedule?.startTime}-${schedule?.endTime}，设备(${schedule?.deviceIds.length}台): ${deviceNames || ''}`,
+      result: 'success',
+    });
+  },
+
+  checkScheduleConflict: (deviceIds, startTime, endTime, excludeScheduleId) => {
+    const allSchedules = get().schedules.filter(
+      (s) => s.id !== excludeScheduleId && s.status !== 'completed'
+    );
+
+    const conflictingSchedules = allSchedules.filter((s) => {
+      const hasOverlapDevice = s.deviceIds.some((id) => deviceIds.includes(id));
+      if (!hasOverlapDevice) return false;
+
+      const sStart = s.startTime;
+      const sEnd = s.endTime;
+      const timeOverlap = startTime < sEnd && endTime > sStart;
+      return timeOverlap;
+    });
+
+    return {
+      conflict: conflictingSchedules.length > 0,
+      conflictingSchedules,
+    };
+  },
+
+  syncPlaylist: (playlistId: string) => {
     const playlist = get().playlists.find((p) => p.id === playlistId);
 
     get().addOperationLog({
@@ -558,13 +721,17 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
   },
 
-  addPatrolRecordWithOrders: (record, abnormalDevices) => {
+  addPatrolRecordWithOrders: (record, abnormalDevices, skipDeviceIds = []) => {
     const newRecord: PatrolRecord = {
       ...record,
       id: generateId(),
     };
 
-    const newOrders: MaintenanceOrder[] = abnormalDevices.map((d) => ({
+    const filteredAbnormal = abnormalDevices.filter(
+      (d) => !skipDeviceIds.includes(d.deviceId)
+    );
+
+    const newOrders: MaintenanceOrder[] = filteredAbnormal.map((d) => ({
       id: generateId(),
       title: `${d.deviceName}巡检发现异常`,
       deviceId: d.deviceId,
@@ -576,6 +743,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       creator: record.inspector,
       createdAt: dayjs().format('YYYY-MM-DD HH:mm:ss'),
       remark: `巡检发现，来源：${record.type}`,
+      source: 'patrol',
+      patrolRecordId: newRecord.id,
     }));
 
     set((state) => ({
@@ -583,12 +752,72 @@ export const useAppStore = create<AppState>((set, get) => ({
       maintenanceOrders: [...newOrders, ...state.maintenanceOrders],
     }));
 
+    const skippedCount = abnormalDevices.length - filteredAbnormal.length;
+
     get().addOperationLog({
       time: dayjs().format('YYYY-MM-DD HH:mm:ss'),
       operator: record.inspector,
       type: OPERATION_TYPES.PATROL_CHECKIN,
       target: record.type,
-      detail: `完成巡检打卡，检查 ${record.devices.length} 台设备，发现 ${abnormalDevices.length} 个异常，已自动生成维修工单`,
+      detail: `完成巡检打卡，检查 ${record.devices.length} 台设备，发现 ${abnormalDevices.length} 个异常${skippedCount > 0 ? `，其中 ${skippedCount} 台已手动转单，自动生成 ${filteredAbnormal.length} 张工单` : '，已自动生成维修工单'}`,
+      result: 'success',
+    });
+  },
+
+  addPatrolRoute: (route) => {
+    const newRoute: PatrolRoute = {
+      ...route,
+      id: generateId(),
+    };
+
+    set((state) => ({
+      patrolRoutes: [...state.patrolRoutes, newRoute],
+    }));
+
+    get().addOperationLog({
+      time: dayjs().format('YYYY-MM-DD HH:mm:ss'),
+      operator: '值班员',
+      type: OPERATION_TYPES.PATROL_ROUTE_ADD,
+      target: route.name,
+      detail: `新增巡检路线，区域: ${route.area}，含 ${route.deviceIds.length} 台设备`,
+      result: 'success',
+    });
+  },
+
+  updatePatrolRoute: (routeId, routeData) => {
+    const oldRoute = get().patrolRoutes.find((r) => r.id === routeId);
+
+    set((state) => ({
+      patrolRoutes: state.patrolRoutes.map((r) =>
+        r.id === routeId ? { ...r, ...routeData } : r
+      ),
+    }));
+
+    const newRoute = get().patrolRoutes.find((r) => r.id === routeId);
+
+    get().addOperationLog({
+      time: dayjs().format('YYYY-MM-DD HH:mm:ss'),
+      operator: '值班员',
+      type: OPERATION_TYPES.PATROL_ROUTE_EDIT,
+      target: newRoute?.name || routeId,
+      detail: `编辑巡检路线，含 ${newRoute?.deviceIds.length} 台设备`,
+      result: 'success',
+    });
+  },
+
+  deletePatrolRoute: (routeId) => {
+    const route = get().patrolRoutes.find((r) => r.id === routeId);
+
+    set((state) => ({
+      patrolRoutes: state.patrolRoutes.filter((r) => r.id !== routeId),
+    }));
+
+    get().addOperationLog({
+      time: dayjs().format('YYYY-MM-DD HH:mm:ss'),
+      operator: '值班员',
+      type: OPERATION_TYPES.PATROL_ROUTE_DELETE,
+      target: route?.name || routeId,
+      detail: '删除巡检路线',
       result: 'success',
     });
   },

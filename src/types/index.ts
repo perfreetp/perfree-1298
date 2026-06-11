@@ -43,7 +43,7 @@ export interface ContentItem {
   duration?: number;
   version: string;
   versions: ContentVersion[];
-  status: 'published' | 'draft' | 'archived';
+  status: 'published' | 'draft' | 'archived' | 'pending_review';
   thumbnail: string;
   uploadTime: string;
   uploader: string;
@@ -56,6 +56,10 @@ export interface ContentVersion {
   uploader: string;
   size: string;
   note: string;
+  reviewStatus?: 'pending' | 'approved' | 'rejected';
+  reviewer?: string;
+  reviewTime?: string;
+  reviewNote?: string;
 }
 
 export interface ScheduleItem {
@@ -119,6 +123,15 @@ export interface PatrolDevice {
   groupId?: string;
 }
 
+export interface PatrolRoute {
+  id: string;
+  name: string;
+  description: string;
+  area: string;
+  deviceIds: string[];
+  sortOrder: number;
+}
+
 export interface MaintenanceOrder {
   id: string;
   title: string;
@@ -132,6 +145,8 @@ export interface MaintenanceOrder {
   createdAt: string;
   completedAt?: string;
   remark: string;
+  source?: 'manual' | 'patrol' | 'alarm';
+  patrolRecordId?: string;
 }
 
 export interface OperationLog {

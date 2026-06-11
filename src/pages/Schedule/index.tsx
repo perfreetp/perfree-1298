@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import {
   Card,
   Table,
@@ -17,6 +17,10 @@ import {
   Row,
   Col,
   Popconfirm,
+  Tabs,
+  DatePicker,
+  Alert,
+  Badge,
 } from 'antd';
 import {
   PlayCircleOutlined,
@@ -27,6 +31,8 @@ import {
   DeleteOutlined,
   ClockCircleOutlined,
   AppstoreOutlined,
+  CalendarOutlined,
+  UnorderedListOutlined,
 } from '@ant-design/icons';
 import { useAppStore } from '@/store';
 import dayjs from 'dayjs';
@@ -38,19 +44,26 @@ export default function Schedule() {
     playlists,
     exhibitions,
     devices,
+    deviceGroups,
     toggleSchedule,
     syncPlaylist,
+    syncSchedule,
     contents,
     addSchedule,
     updateSchedule,
     deleteSchedule,
+    checkScheduleConflict,
   } = useAppStore();
 
+  const [viewMode, setViewMode] = useState<'list' | 'timeline'>('list');
+  const [selectedDate, setSelectedDate] = useState(dayjs());
+  const [selectedGroupId, setSelectedGroupId] = useState<string>('all');
   const [activeTab, setActiveTab] = useState<'schedule' | 'playlist'>('schedule');
   const [modalVisible, setModalVisible] = useState(false);
   const [selectedSchedule, setSelectedSchedule] = useState<ScheduleItem | null>(null);
   const [playlistModalVisible, setPlaylistModalVisible] = useState(false);
   const [selectedPlaylist, setSelectedPlaylist] = useState<Playlist | null>(null);
+  const [conflictWarning, setConflictWarning] = useState<string>('');
   const [form] = Form.useForm();
 
   const repeatNames: Record<string, string> = {
@@ -74,8 +87,43 @@ export default function Schedule() {
     paused: '已暂停',
   };
 
+  const filteredSchedules = useMemo(() => {
+    let result = [...schedules];
+    if (selectedGroupId !== 'all') {
+      const group = deviceGroups.find((g) => g.id === selectedGroupId);
+      if (group) {
+        result = result.filter((s) =>
+          s.deviceIds.some((id) => group.deviceIds.includes(id))
+        );
+      }
+    }
+    return result.sort((a, b) => a.startTime.localeCompare(b.startTime));
+  }, [schedules, selectedGroupId, deviceGroups]);
+
+  const timelineData = useMemo(() => {
+    const hours = [];
+    for (let h = 6; h <= 22; h++) {
+      hours.push(h);
+    }
+    return hours;
+  }, []);
+
+  const getSchedulePosition = (schedule: ScheduleItem) => {
+    const startHour = parseInt(schedule.startTime.split(':')[0]);
+    const startMin = parseInt(schedule.startTime.split(':')[1]);
+    const endHour = parseInt(schedule.endTime.split(':')[0]);
+    const endMin = parseInt(schedule.endTime.split(':')[1]);
+
+    const startOffset = ((startHour - 6) + startMin / 60) * 60;
+    const endOffset = ((endHour - 6) + endMin / 60) * 60;
+    const width = endOffset - startOffset;
+
+    return { left: startOffset, width: Math.max(width, 40) };
+  };
+
   const handleAddSchedule = () => {
     setSelectedSchedule(null);
+    setConflictWarning('');
     form.resetFields();
     form.setFieldsValue({
       name: '',
@@ -91,6 +139,7 @@ export default function Schedule() {
 
   const handleEditSchedule = (record: ScheduleItem) => {
     setSelectedSchedule(record);
+    setConflictWarning('');
     form.setFieldsValue({
       name: record.name,
       startTime: dayjs(record.startTime, 'HH:mm'),
@@ -108,38 +157,96 @@ export default function Schedule() {
     message.success('排期已删除');
   };
 
+  const handleSyncSchedule = (scheduleId: string) => {
+    syncSchedule(scheduleId);
+    message.success('排期已同步到设备');
+  };
+
   const handleSyncPlaylist = (playlistId: string) => {
     syncPlaylist(playlistId);
     message.success('播放列表已同步到设备');
   };
 
+  const checkConflict = () => {
+    const startTime = form.getFieldValue('startTime');
+    const endTime = form.getFieldValue('endTime');
+    const deviceIds = form.getFieldValue('deviceIds') || [];
+
+    if (!startTime || !endTime || deviceIds.length === 0) {
+      setConflictWarning('');
+      return;
+    }
+
+    const result = checkScheduleConflict(
+      deviceIds,
+      startTime.format('HH:mm'),
+      endTime.format('HH:mm'),
+      selectedSchedule?.id
+    );
+
+    if (result.conflict) {
+      const conflictNames = result.conflictingSchedules.map((s) => s.name).join('、');
+      setConflictWarning(`时间冲突！与排期 "${conflictNames}" 的设备播放时间重叠`);
+    } else {
+      setConflictWarning('');
+    }
+  };
+
   const handleSaveSchedule = async () => {
     try {
       const values = await form.validateFields();
-      const scheduleData = {
-        name: values.name,
-        startTime: values.startTime.format('HH:mm'),
-        endTime: values.endTime.format('HH:mm'),
-        repeat: values.repeat,
-        exhibitionId: values.exhibitionId,
-        deviceIds: values.deviceIds || [],
-        contentIds: values.contentIds || [],
-        status: selectedSchedule ? selectedSchedule.status : 'scheduled',
-      };
+      const startTime = values.startTime.format('HH:mm');
+      const endTime = values.endTime.format('HH:mm');
 
-      if (selectedSchedule) {
-        updateSchedule(selectedSchedule.id, scheduleData);
-        message.success('排期已更新');
-      } else {
-        addSchedule(scheduleData);
-        message.success('排期已创建');
+      const conflictResult = checkScheduleConflict(
+        values.deviceIds || [],
+        startTime,
+        endTime,
+        selectedSchedule?.id
+      );
+
+      if (conflictResult.conflict) {
+        Modal.confirm({
+          title: '时间冲突提醒',
+          content: `当前选择的设备与已有排期存在时间重叠，是否仍要保存？`,
+          okText: '继续保存',
+          cancelText: '取消',
+          onOk: () => {
+            doSaveSchedule(values, startTime, endTime);
+          },
+        });
+        return;
       }
 
-      setModalVisible(false);
-      form.resetFields();
+      doSaveSchedule(values, startTime, endTime);
     } catch (error) {
       console.error('表单验证失败:', error);
     }
+  };
+
+  const doSaveSchedule = (values: any, startTime: string, endTime: string) => {
+    const scheduleData = {
+      name: values.name,
+      startTime,
+      endTime,
+      repeat: values.repeat,
+      exhibitionId: values.exhibitionId,
+      deviceIds: values.deviceIds || [],
+      contentIds: values.contentIds || [],
+      status: selectedSchedule ? selectedSchedule.status : 'scheduled',
+    };
+
+    if (selectedSchedule) {
+      updateSchedule(selectedSchedule.id, scheduleData);
+      message.success('排期已更新');
+    } else {
+      addSchedule(scheduleData);
+      message.success('排期已创建');
+    }
+
+    setModalVisible(false);
+    form.resetFields();
+    setConflictWarning('');
   };
 
   const scheduleColumns = [
@@ -192,7 +299,7 @@ export default function Schedule() {
     {
       title: '操作',
       key: 'action',
-      width: 240,
+      width: 280,
       fixed: 'right' as const,
       render: (_: unknown, record: ScheduleItem) => (
         <Space size="small">
@@ -208,7 +315,7 @@ export default function Schedule() {
             <Button size="small" icon={<EditOutlined />} onClick={() => handleEditSchedule(record)} />
           </Tooltip>
           <Tooltip title="同步到设备">
-            <Button size="small" icon={<SyncOutlined />} onClick={() => handleSyncPlaylist(record.id)} />
+            <Button size="small" icon={<SyncOutlined />} onClick={() => handleSyncSchedule(record.id)} />
           </Tooltip>
           <Popconfirm
             title="确认删除"
@@ -227,6 +334,90 @@ export default function Schedule() {
     },
   ];
 
+  const renderTimelineView = () => (
+    <div>
+      <div style={{ marginBottom: 16, display: 'flex', alignItems: 'center', gap: 16 }}>
+        <DatePicker value={selectedDate} onChange={setSelectedDate} style={{ width: 180 }} />
+        <span style={{ color: '#666' }}>
+          共 {filteredSchedules.length} 条排期
+        </span>
+      </div>
+      <div
+        style={{
+          position: 'relative',
+          height: 400,
+          border: '1px solid #e8e8e8',
+          borderRadius: 4,
+          overflowX: 'auto',
+          overflowY: 'hidden',
+        }}
+      >
+        <div style={{ display: 'flex', position: 'relative', minWidth: 960, height: '100%' }}>
+          {timelineData.map((hour) => (
+            <div
+              key={hour}
+              style={{
+                width: 60,
+                flexShrink: 0,
+                borderRight: '1px solid #f0f0f0',
+                textAlign: 'center',
+                paddingTop: 8,
+                color: '#999',
+                fontSize: 12,
+              }}
+            >
+              {hour.toString().padStart(2, '0')}:00
+            </div>
+          ))}
+        </div>
+        <div style={{ position: 'absolute', top: 40, left: 0, right: 0, bottom: 0 }}>
+          {filteredSchedules.map((schedule, idx) => {
+            const pos = getSchedulePosition(schedule);
+            const exhibition = exhibitions.find((e) => e.id === schedule.exhibitionId);
+            return (
+              <div
+                key={schedule.id}
+                style={{
+                  position: 'absolute',
+                  top: idx * 36 + 8,
+                  left: pos.left,
+                  width: pos.width,
+                  height: 28,
+                  background:
+                    schedule.status === 'running'
+                      ? '#52c41a'
+                      : schedule.status === 'paused'
+                      ? '#faad14'
+                      : '#1890ff',
+                  borderRadius: 4,
+                  color: '#fff',
+                  fontSize: 12,
+                  padding: '4px 8px',
+                  overflow: 'hidden',
+                  whiteSpace: 'nowrap',
+                  textOverflow: 'ellipsis',
+                  cursor: 'pointer',
+                  opacity: schedule.status === 'completed' ? 0.5 : 1,
+                }}
+                onClick={() => handleEditSchedule(schedule)}
+                title={`${schedule.name} - ${exhibition?.name || ''}`}
+              >
+                <Badge
+                  status={schedule.status === 'running' ? 'success' : schedule.status === 'paused' ? 'warning' : 'default'}
+                  text={schedule.name}
+                  style={{ color: '#fff' }}
+                />
+              </div>
+            );
+          })}
+        </div>
+      </div>
+      <div style={{ marginTop: 16, color: '#999', fontSize: 12 }}>
+        提示：点击时间轴上的排期条可快速编辑
+      </div>
+    </div>
+  );
+
   return (
     <div style={{ padding: 16, height: '100%', overflow: 'auto' }}>
       <Card
@@ -238,9 +429,36 @@ export default function Schedule() {
         onTabChange={(key) => setActiveTab(key as 'schedule' | 'playlist')}
         extra={
           activeTab === 'schedule' ? (
-            <Button type="primary" icon={<PlusOutlined />} onClick={handleAddSchedule}>
-              新建排期
-            </Button>
+            <Space>
+              <Select
+                value={selectedGroupId}
+                onChange={setSelectedGroupId}
+                style={{ width: 140 }}
+                options={[
+                  { value: 'all', label: '全部展区' },
+                  ...deviceGroups.map((g) => ({ value: g.id, label: g.name })),
+                ]}
+              />
+              <Button.Group>
+                <Button
+                  icon={<UnorderedListOutlined />}
+                  type={viewMode === 'list' ? 'primary' : 'default'}
+                  onClick={() => setViewMode('list')}
+                >
+                  列表
+                </Button>
+                <Button
+                  icon={<CalendarOutlined />}
+                  type={viewMode === 'timeline' ? 'primary' : 'default'}
+                  onClick={() => setViewMode('timeline')}
+                >
+                  时间轴
+                </Button>
+              </Button.Group>
+              <Button type="primary" icon={<PlusOutlined />} onClick={handleAddSchedule}>
+                新建排期
+              </Button>
+            </Space>
           ) : (
             <Button icon={<SyncOutlined />} onClick={() => message.success('所有播放列表已同步')}>
               全部同步
@@ -248,15 +466,17 @@ export default function Schedule() {
           )
         }
       >
-        {activeTab === 'schedule' && (
+        {activeTab === 'schedule' && viewMode === 'list' && (
           <Table
-            dataSource={schedules}
+            dataSource={filteredSchedules}
             rowKey="id"
             pagination={{ pageSize: 8 }}
             columns={scheduleColumns}
             scroll={{ x: 900 }}
           />
         )}
+
+        {activeTab === 'schedule' && viewMode === 'timeline' && renderTimelineView()}
 
         {activeTab === 'playlist' && (
           <Row gutter={[16, 16]}>
@@ -322,6 +542,7 @@ export default function Schedule() {
         onCancel={() => {
           setModalVisible(false);
           form.resetFields();
+          setConflictWarning('');
         }}
         onOk={handleSaveSchedule}
         okText="保存"
@@ -329,6 +550,15 @@ export default function Schedule() {
         width={600}
         maskClosable={false}
       >
+        {conflictWarning && (
+          <Alert
+            message="时间冲突"
+            description={conflictWarning}
+            type="warning"
+            showIcon
+            style={{ marginBottom: 16 }}
+          />
+        )}
         <Form form={form} layout="vertical">
           <Form.Item
             label="排期名称"
@@ -344,7 +574,7 @@ export default function Schedule() {
                 name="startTime"
                 rules={[{ required: true, message: '请选择开始时间' }]}
               >
-                <TimePicker style={{ width: '100%' }} format="HH:mm" />
+                <TimePicker style={{ width: '100%' }} format="HH:mm" onChange={checkConflict} />
               </Form.Item>
             </Col>
             <Col span={12}>
@@ -353,7 +583,7 @@ export default function Schedule() {
                 name="endTime"
                 rules={[{ required: true, message: '请选择结束时间' }]}
               >
-                <TimePicker style={{ width: '100%' }} format="HH:mm" />
+                <TimePicker style={{ width: '100%' }} format="HH:mm" onChange={checkConflict} />
               </Form.Item>
             </Col>
           </Row>
@@ -389,6 +619,7 @@ export default function Schedule() {
               mode="multiple"
               options={devices.map((d) => ({ value: d.id, label: d.name }))}
               placeholder="请选择播放设备"
+              onChange={checkConflict}
             />
           </Form.Item>
           <Form.Item label="播放内容" name="contentIds">

@@ -10,6 +10,7 @@ import {
   MaintenanceOrder,
   OperationLog,
   DailyReport,
+  PatrolRoute,
 } from '@/types';
 
 export const mockDeviceGroups: DeviceGroup[] = [
@@ -827,5 +828,40 @@ export const mockDailyReports: DailyReport[] = [
     patrolTimes: 2,
     operationCount: 30,
     energySavingHours: 2,
+  },
+];
+
+export const mockPatrolRoutes: PatrolRoute[] = [
+  {
+    id: 'route-1',
+    name: '一楼大厅巡检',
+    description: '入口大厅设备日常检查',
+    area: '一楼大厅',
+    deviceIds: ['dev-1', 'dev-2', 'dev-5', 'dev-9'],
+    sortOrder: 1,
+  },
+  {
+    id: 'route-2',
+    name: '二楼展厅A巡检',
+    description: '历史文化展区设备检查',
+    area: '二楼展厅A',
+    deviceIds: ['dev-3', 'dev-6', 'dev-10'],
+    sortOrder: 2,
+  },
+  {
+    id: 'route-3',
+    name: '二楼展厅B巡检',
+    description: '科技创新展区设备检查',
+    area: '二楼展厅B',
+    deviceIds: ['dev-4', 'dev-7', 'dev-8', 'dev-11'],
+    sortOrder: 3,
+  },
+  {
+    id: 'route-4',
+    name: '负一楼多功能厅',
+    description: '报告厅和音响系统检查',
+    area: '负一楼多功能厅',
+    deviceIds: ['dev-12', 'dev-13'],
+    sortOrder: 4,
   },
 ];
