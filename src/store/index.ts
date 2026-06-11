@@ -110,12 +110,14 @@ interface AppState {
 
   createMaintenanceOrder: (order: Omit<MaintenanceOrder, 'id' | 'createdAt'>) => void;
   updateMaintenanceStatus: (orderId: string, status: MaintenanceOrder['status']) => void;
+  linkMaintenanceToPatrol: (orderId: string, patrolRecordId: string, note?: string) => void;
 
   addPatrolRecord: (record: Omit<PatrolRecord, 'id'>) => void;
   addPatrolRecordWithOrders: (
     record: Omit<PatrolRecord, 'id'>,
     abnormalDevices: PatrolDevice[],
-    skipDeviceIds?: string[]
+    skipDeviceIds?: string[],
+    linkedOrderIds?: Record<string, string>
   ) => void;
   addPatrolRoute: (route: Omit<PatrolRoute, 'id'>) => void;
   updatePatrolRoute: (routeId: string, route: Partial<PatrolRoute>) => void;
@@ -651,6 +653,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       target: device?.name || deviceId,
       detail: '标记设备为离线',
       result: 'success',
+      deviceIds: [deviceId],
     });
   },
 
@@ -670,6 +673,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       target: device?.name || deviceId,
       detail: '标记设备为在线',
       result: 'success',
+      deviceIds: [deviceId],
     });
   },
 
@@ -721,6 +725,32 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
   },
 
+  linkMaintenanceToPatrol: (orderId, patrolRecordId, note) => {
+    const order = get().maintenanceOrders.find((o) => o.id === orderId);
+    set((state) => ({
+      maintenanceOrders: state.maintenanceOrders.map((o) =>
+        o.id === orderId
+          ? {
+              ...o,
+              patrolRecordId,
+              linkedPatrolNote: note || o.linkedPatrolNote,
+              source: o.source || 'patrol',
+            }
+          : o
+      ),
+    }));
+
+    get().addOperationLog({
+      time: dayjs().format('YYYY-MM-DD HH:mm:ss'),
+      operator: '值班员',
+      type: OPERATION_TYPES.MAINTENANCE_UPDATE,
+      target: order?.deviceName || orderId,
+      detail: `将工单关联到巡检记录: ${patrolRecordId}`,
+      result: 'success',
+      deviceIds: order ? [order.deviceId] : [],
+    });
+  },
+
   addPatrolRecord: (record) => {
     const newRecord: PatrolRecord = {
       ...record,
@@ -741,14 +771,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
   },
 
-  addPatrolRecordWithOrders: (record, abnormalDevices, skipDeviceIds = []) => {
+  addPatrolRecordWithOrders: (record, abnormalDevices, skipDeviceIds = [], linkedOrderIds = {}) => {
     const newRecord: PatrolRecord = {
       ...record,
       id: generateId(),
     };
 
     const filteredAbnormal = abnormalDevices.filter(
-      (d) => !skipDeviceIds.includes(d.deviceId)
+      (d) => !skipDeviceIds.includes(d.deviceId) && !linkedOrderIds[d.deviceId]
     );
 
     const newOrders: MaintenanceOrder[] = filteredAbnormal.map((d) => ({
@@ -767,19 +797,44 @@ export const useAppStore = create<AppState>((set, get) => ({
       patrolRecordId: newRecord.id,
     }));
 
+    const linkedCount = Object.keys(linkedOrderIds).length;
+    let updatedExistingOrders: MaintenanceOrder[] = [];
+    if (linkedCount > 0) {
+      updatedExistingOrders = get().maintenanceOrders.map((o) => {
+        const matchedDevice = Object.entries(linkedOrderIds).find(
+          ([deviceId, orderId]) => orderId === o.id
+        );
+        if (matchedDevice) {
+          const [deviceId] = matchedDevice;
+          const dev = abnormalDevices.find((d) => d.deviceId === deviceId);
+          return {
+            ...o,
+            patrolRecordId: newRecord.id,
+            source: o.source || 'patrol',
+            linkedPatrolNote: dev?.note
+              ? `巡检备注: ${dev.note}`
+              : o.linkedPatrolNote,
+          };
+        }
+        return o;
+      });
+    }
+
     set((state) => ({
       patrolRecords: [newRecord, ...state.patrolRecords],
-      maintenanceOrders: [...newOrders, ...state.maintenanceOrders],
+      maintenanceOrders: linkedCount > 0
+        ? [...newOrders, ...updatedExistingOrders]
+        : [...newOrders, ...state.maintenanceOrders],
     }));
 
-    const skippedCount = abnormalDevices.length - filteredAbnormal.length;
+    const skippedCount = skipDeviceIds.length;
 
     get().addOperationLog({
       time: dayjs().format('YYYY-MM-DD HH:mm:ss'),
       operator: record.inspector,
       type: OPERATION_TYPES.PATROL_CHECKIN,
       target: record.type,
-      detail: `完成巡检打卡，检查 ${record.devices.length} 台设备，发现 ${abnormalDevices.length} 个异常${skippedCount > 0 ? `，其中 ${skippedCount} 台已手动转单，自动生成 ${filteredAbnormal.length} 张工单` : '，已自动生成维修工单'}`,
+      detail: `完成巡检打卡，检查 ${record.devices.length} 台设备，发现 ${abnormalDevices.length} 个异常${skippedCount > 0 ? `，${skippedCount} 台已关联手动工单` : ''}${linkedCount > 0 ? `，${linkedCount} 台关联已有工单` : ''}，自动生成 ${filteredAbnormal.length} 张工单`,
       result: 'success',
       deviceIds: record.devices.map((d) => d.deviceId),
     });

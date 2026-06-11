@@ -17,10 +17,10 @@ import {
   Row,
   Col,
   Popconfirm,
-  Tabs,
   DatePicker,
   Alert,
   Badge,
+  Radio,
 } from 'antd';
 import {
   PlayCircleOutlined,
@@ -37,6 +37,25 @@ import {
 import { useAppStore } from '@/store';
 import dayjs from 'dayjs';
 import type { ScheduleItem, Playlist } from '@/types';
+
+const { RangePicker } = DatePicker;
+
+const weekdayOptions = [
+  { label: '周一', value: 1 },
+  { label: '周二', value: 2 },
+  { label: '周三', value: 3 },
+  { label: '周四', value: 4 },
+  { label: '周五', value: 5 },
+  { label: '周六', value: 6 },
+  { label: '周日', value: 0 },
+];
+
+const repeatNames: Record<string, string> = {
+  once: '单次',
+  daily: '每天',
+  weekly: '每周',
+  workday: '工作日',
+};
 
 export default function Schedule() {
   const {
@@ -65,13 +84,7 @@ export default function Schedule() {
   const [selectedPlaylist, setSelectedPlaylist] = useState<Playlist | null>(null);
   const [conflictWarning, setConflictWarning] = useState<string>('');
   const [form] = Form.useForm();
-
-  const repeatNames: Record<string, string> = {
-    once: '单次',
-    daily: '每天',
-    weekly: '每周',
-    workday: '工作日',
-  };
+  const formRepeat = Form.useWatch('repeat', form);
 
   const statusColors: Record<string, string> = {
     scheduled: 'default',
@@ -90,6 +103,13 @@ export default function Schedule() {
   const isScheduleActiveOnDate = (schedule: ScheduleItem, date: dayjs.Dayjs) => {
     const weekday = date.day();
     const dateStr = date.format('YYYY-MM-DD');
+
+    if (schedule.validFrom && dayjs(schedule.validFrom).isAfter(date, 'day')) {
+      return false;
+    }
+    if (schedule.validTo && dayjs(schedule.validTo).isBefore(date, 'day')) {
+      return false;
+    }
 
     switch (schedule.repeat) {
       case 'daily':
@@ -152,6 +172,9 @@ export default function Schedule() {
       exhibitionId: exhibitions[0]?.id,
       deviceIds: [],
       contentIds: [],
+      onceDate: selectedDate,
+      weekdays: [selectedDate.day()],
+      validRange: [selectedDate, selectedDate.add(90, 'day')],
     });
     setModalVisible(true);
   };
@@ -159,7 +182,8 @@ export default function Schedule() {
   const handleEditSchedule = (record: ScheduleItem) => {
     setSelectedSchedule(record);
     setConflictWarning('');
-    form.setFieldsValue({
+
+    const formValues: any = {
       name: record.name,
       startTime: dayjs(record.startTime, 'HH:mm'),
       endTime: dayjs(record.endTime, 'HH:mm'),
@@ -167,7 +191,25 @@ export default function Schedule() {
       exhibitionId: record.exhibitionId,
       deviceIds: record.deviceIds,
       contentIds: record.contentIds,
-    });
+    };
+
+    if (record.repeat === 'once' && record.date) {
+      formValues.onceDate = dayjs(record.date);
+    } else {
+      formValues.onceDate = selectedDate;
+    }
+    if (record.repeat === 'weekly' && record.weekday !== undefined) {
+      formValues.weekdays = [record.weekday];
+    } else {
+      formValues.weekdays = [selectedDate.day()];
+    }
+    if (record.validFrom && record.validTo) {
+      formValues.validRange = [dayjs(record.validFrom), dayjs(record.validTo)];
+    } else {
+      formValues.validRange = [selectedDate, selectedDate.add(90, 'day')];
+    }
+
+    form.setFieldsValue(formValues);
     setModalVisible(true);
   };
 
@@ -244,7 +286,7 @@ export default function Schedule() {
   };
 
   const doSaveSchedule = (values: any, startTime: string, endTime: string) => {
-    const scheduleData = {
+    const scheduleData: any = {
       name: values.name,
       startTime,
       endTime,
@@ -254,6 +296,22 @@ export default function Schedule() {
       contentIds: values.contentIds || [],
       status: selectedSchedule ? selectedSchedule.status : 'scheduled',
     };
+
+    if (values.repeat === 'once') {
+      scheduleData.date = values.onceDate ? values.onceDate.format('YYYY-MM-DD') : selectedDate.format('YYYY-MM-DD');
+      scheduleData.weekday = undefined;
+    } else if (values.repeat === 'weekly') {
+      scheduleData.weekday = values.weekdays && values.weekdays[0] !== undefined ? values.weekdays[0] : selectedDate.day();
+      scheduleData.date = undefined;
+    } else {
+      scheduleData.date = undefined;
+      scheduleData.weekday = undefined;
+    }
+
+    if (values.validRange && values.validRange.length === 2) {
+      scheduleData.validFrom = values.validRange[0].format('YYYY-MM-DD');
+      scheduleData.validTo = values.validRange[1].format('YYYY-MM-DD');
+    }
 
     if (selectedSchedule) {
       updateSchedule(selectedSchedule.id, scheduleData);
@@ -266,6 +324,24 @@ export default function Schedule() {
     setModalVisible(false);
     form.resetFields();
     setConflictWarning('');
+  };
+
+  const getScheduleDisplayInfo = (record: ScheduleItem) => {
+    const parts: string[] = [];
+    if (record.repeat === 'once' && record.date) {
+      parts.push(record.date);
+    } else if (record.repeat === 'weekly' && record.weekday !== undefined) {
+      const wd = weekdayOptions.find((w) => w.value === record.weekday);
+      if (wd) parts.push('每' + wd.label);
+    }
+    if (record.validFrom && record.validTo) {
+      parts.push(`有效期: ${record.validFrom} ~ ${record.validTo}`);
+    } else if (record.validFrom) {
+      parts.push(`从 ${record.validFrom} 起`);
+    } else if (record.validTo) {
+      parts.push(`到 ${record.validTo} 止`);
+    }
+    return parts.join('  ·  ');
   };
 
   const scheduleColumns = [
@@ -288,17 +364,17 @@ export default function Schedule() {
       title: '播放时间',
       key: 'time',
       render: (_: unknown, record: ScheduleItem) => (
-        <Space>
-          <ClockCircleOutlined />
-          {record.startTime} - {record.endTime}
-        </Space>
+        <div>
+          <Space size="small">
+            <ClockCircleOutlined style={{ color: '#888' }} />
+            <span>{record.startTime} - {record.endTime}</span>
+            <Tag>{repeatNames[record.repeat]}</Tag>
+          </Space>
+          <div style={{ fontSize: 12, color: '#999', marginTop: 4 }}>
+            {getScheduleDisplayInfo(record)}
+          </div>
+        </div>
       ),
-    },
-    {
-      title: '重复周期',
-      dataIndex: 'repeat',
-      key: 'repeat',
-      render: (r: string) => <Tag>{repeatNames[r]}</Tag>,
     },
     {
       title: '设备数',
@@ -485,6 +561,11 @@ export default function Schedule() {
               <DatePicker value={selectedDate} onChange={setSelectedDate} style={{ width: 180 }} />
               <span style={{ color: '#666' }}>
                 共 {filteredSchedules.length} 条排期
+                {filteredSchedules.length === 0 && selectedDate && (
+                  <Tag color="default" style={{ marginLeft: 8 }}>
+                    {selectedDate.format('YYYY-MM-DD')} 无安排
+                  </Tag>
+                )}
               </span>
             </div>
             {viewMode === 'list' && (
@@ -494,6 +575,7 @@ export default function Schedule() {
                 pagination={{ pageSize: 8 }}
                 columns={scheduleColumns}
                 scroll={{ x: 900 }}
+                locale={{ emptyText: selectedDate ? `${selectedDate.format('YYYY-MM-DD')} 暂无排期安排` : '暂无数据' }}
               />
             )}
             {viewMode === 'timeline' && renderTimelineView()}
@@ -569,7 +651,7 @@ export default function Schedule() {
         onOk={handleSaveSchedule}
         okText="保存"
         cancelText="取消"
-        width={600}
+        width={680}
         maskClosable={false}
       >
         {conflictWarning && (
@@ -609,19 +691,54 @@ export default function Schedule() {
               </Form.Item>
             </Col>
           </Row>
+          <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item
+                label="重复周期"
+                name="repeat"
+                rules={[{ required: true, message: '请选择重复周期' }]}
+              >
+                <Select
+                  options={[
+                    { value: 'once', label: '单次' },
+                    { value: 'daily', label: '每天' },
+                    { value: 'weekly', label: '每周' },
+                    { value: 'workday', label: '工作日' },
+                  ]}
+                />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              {formRepeat === 'once' && (
+                <Form.Item
+                  label="单次日期"
+                  name="onceDate"
+                  rules={[{ required: true, message: '请选择日期' }]}
+                >
+                  <DatePicker style={{ width: '100%' }} format="YYYY-MM-DD" />
+                </Form.Item>
+              )}
+              {formRepeat === 'weekly' && (
+                <Form.Item
+                  label="每周几"
+                  name="weekdays"
+                  rules={[{ required: true, message: '请选择周几' }]}
+                >
+                  <Radio.Group
+                    optionType="button"
+                    buttonStyle="solid"
+                    options={weekdayOptions}
+                  />
+                </Form.Item>
+              )}
+            </Col>
+          </Row>
           <Form.Item
-            label="重复周期"
-            name="repeat"
-            rules={[{ required: true, message: '请选择重复周期' }]}
+            label="有效期范围"
+            name="validRange"
+            rules={[{ required: true, message: '请选择有效期范围' }]}
           >
-            <Select
-              options={[
-                { value: 'once', label: '单次' },
-                { value: 'daily', label: '每天' },
-                { value: 'weekly', label: '每周' },
-                { value: 'workday', label: '工作日' },
-              ]}
-            />
+            <RangePicker style={{ width: '100%' }} format="YYYY-MM-DD" />
           </Form.Item>
           <Form.Item
             label="关联展览"

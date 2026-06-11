@@ -20,6 +20,8 @@ import {
   Tooltip,
   Popconfirm,
   Empty,
+  Descriptions,
+  Alert,
 } from 'antd';
 import {
   CheckSquareOutlined,
@@ -36,6 +38,8 @@ import {
   EditOutlined,
   DeleteOutlined,
   ApartmentOutlined,
+  LinkOutlined,
+  ReloadOutlined,
 } from '@ant-design/icons';
 import { useAppStore } from '@/store';
 import type { PatrolRecord, MaintenanceOrder, PatrolDevice, PatrolRoute } from '@/types';
@@ -54,6 +58,7 @@ export default function PatrolRecord() {
     addPatrolRecordWithOrders,
     createMaintenanceOrder,
     updateMaintenanceStatus,
+    linkMaintenanceToPatrol,
     addPatrolRoute,
     updatePatrolRoute,
     deletePatrolRoute,
@@ -66,15 +71,19 @@ export default function PatrolRecord() {
   const [maintDetailVisible, setMaintDetailVisible] = useState(false);
   const [selectedMaint, setSelectedMaint] = useState<MaintenanceOrder | null>(null);
   const [createMaintVisible, setCreateMaintVisible] = useState(false);
+  const [linkOrderVisible, setLinkOrderVisible] = useState(false);
+  const [linkTargetDevice, setLinkTargetDevice] = useState<PatrolDevice | null>(null);
   const [routeModalVisible, setRouteModalVisible] = useState(false);
   const [selectedRoute, setSelectedRoute] = useState<PatrolRoute | null>(null);
   const [checkinForm] = Form.useForm();
   const [maintForm] = Form.useForm();
+  const [linkForm] = Form.useForm();
   const [routeForm] = Form.useForm();
 
   const [patrolDevices, setPatrolDevices] = useState<PatrolDevice[]>([]);
   const [selectedRouteId, setSelectedRouteId] = useState<string>('');
   const [manualOrderDeviceIds, setManualOrderDeviceIds] = useState<string[]>([]);
+  const [linkedOrderMap, setLinkedOrderMap] = useState<Record<string, string>>({});
   const [currentMaintFromPatrol, setCurrentMaintFromPatrol] = useState<string | null>(null);
 
   const patrolTypeNames: Record<string, string> = {
@@ -122,6 +131,20 @@ export default function PatrolRecord() {
   const todayPatrols = patrolRecords.filter((r) => r.date === dayjs().format('YYYY-MM-DD'));
   const abnormalDevicesCount = patrolDevices.filter((d) => d.status !== 'normal').length;
 
+  const getOpenOrdersForDevice = (deviceId: string): MaintenanceOrder[] => {
+    return maintenanceOrders.filter(
+      (o) =>
+        o.deviceId === deviceId &&
+        (o.status === 'pending' || o.status === 'processing')
+    );
+  };
+
+  const getDeviceStatusByPatrol = (status: 'normal' | 'fault' | 'offline') => {
+    if (status === 'fault') return 'fault';
+    if (status === 'offline') return 'offline';
+    return 'online';
+  };
+
   const handleCheckin = () => {
     const allDevices: PatrolDevice[] = devices.map((d) => ({
       deviceId: d.id,
@@ -133,6 +156,7 @@ export default function PatrolRecord() {
     setPatrolDevices(allDevices);
     setSelectedRouteId('');
     setManualOrderDeviceIds([]);
+    setLinkedOrderMap({});
     checkinForm.resetFields();
     checkinForm.setFieldsValue({
       type: 'morning',
@@ -173,6 +197,7 @@ export default function PatrolRecord() {
       setPatrolDevices(allDevices);
     }
     setManualOrderDeviceIds([]);
+    setLinkedOrderMap({});
   };
 
   const handleDeviceStatusChange = (deviceId: string, status: 'normal' | 'fault' | 'offline') => {
@@ -181,6 +206,11 @@ export default function PatrolRecord() {
     );
     if (status === 'normal') {
       setManualOrderDeviceIds((prev) => prev.filter((id) => id !== deviceId));
+      setLinkedOrderMap((prev) => {
+        const next = { ...prev };
+        delete next[deviceId];
+        return next;
+      });
     }
   };
 
@@ -227,6 +257,42 @@ export default function PatrolRecord() {
     setCreateMaintVisible(true);
   };
 
+  const handleLinkExistingOrder = (device: PatrolDevice) => {
+    setLinkTargetDevice(device);
+    linkForm.resetFields();
+    const openOrders = getOpenOrdersForDevice(device.deviceId);
+    if (openOrders.length > 0) {
+      linkForm.setFieldsValue({ orderId: openOrders[0].id });
+    }
+    setLinkOrderVisible(true);
+  };
+
+  const handleSaveLinkOrder = () => {
+    if (!linkTargetDevice) return;
+    const values = linkForm.getFieldsValue();
+    if (!values.orderId) {
+      message.warning('请选择要关联的工单');
+      return;
+    }
+    setLinkedOrderMap((prev) => ({
+      ...prev,
+      [linkTargetDevice.deviceId]: values.orderId,
+    }));
+    const order = maintenanceOrders.find((o) => o.id === values.orderId);
+    message.success(`已关联工单 ${order?.title || values.orderId}，提交时将同步巡检备注`);
+    setLinkOrderVisible(false);
+    setLinkTargetDevice(null);
+  };
+
+  const handleCancelLinkOrder = (deviceId: string) => {
+    setLinkedOrderMap((prev) => {
+      const next = { ...prev };
+      delete next[deviceId];
+      return next;
+    });
+    message.info('已取消关联');
+  };
+
   const handleSaveCheckin = async () => {
     try {
       const values = await checkinForm.validateFields();
@@ -247,20 +313,26 @@ export default function PatrolRecord() {
       const skipIds = manualOrderDeviceIds.filter((id) =>
         abnormalDevices.some((d) => d.deviceId === id)
       );
-      addPatrolRecordWithOrders(recordData, abnormalDevices, skipIds);
 
-      const autoGenCount = abnormalDevices.length - manualOrderDeviceIds.filter((id) =>
-        abnormalDevices.some((d) => d.deviceId === id)
-      ).length;
+      const validLinkedOrderIds: Record<string, string> = {};
+      Object.entries(linkedOrderMap).forEach(([deviceId, orderId]) => {
+        const isAbnormal = abnormalDevices.some((d) => d.deviceId === deviceId);
+        if (isAbnormal && !skipIds.includes(deviceId)) {
+          validLinkedOrderIds[deviceId] = orderId;
+        }
+      });
+
+      addPatrolRecordWithOrders(recordData, abnormalDevices, skipIds, validLinkedOrderIds);
+
+      const linkedCount = Object.keys(validLinkedOrderIds).length;
+      const autoGenCount = abnormalDevices.length - skipIds.length - linkedCount;
 
       if (abnormalDevices.length > 0) {
-        if (manualOrderDeviceIds.length > 0) {
-          message.success(
-            `巡检打卡成功，${manualOrderDeviceIds.length} 台已手动转单，自动生成 ${Math.max(0, autoGenCount)} 张维修工单`
-          );
-        } else {
-          message.success(`巡检打卡成功，已生成 ${abnormalDevices.length} 张维修工单`);
-        }
+        const parts: string[] = [];
+        if (skipIds.length > 0) parts.push(`${skipIds.length} 台已手动转单`);
+        if (linkedCount > 0) parts.push(`${linkedCount} 台关联已有工单`);
+        parts.push(`自动生成 ${Math.max(0, autoGenCount)} 张维修工单`);
+        message.success(`巡检打卡成功，${parts.join('，')}`);
       } else {
         message.success('巡检打卡成功');
       }
@@ -589,6 +661,22 @@ export default function PatrolRecord() {
     [manualOrderDeviceIds, patrolDevices]
   );
 
+  const linkedOrderCount = useMemo(
+    () => Object.keys(linkedOrderMap).filter((id) =>
+      patrolDevices.some((d) => d.deviceId === id && d.status !== 'normal')
+    ).length,
+    [linkedOrderMap, patrolDevices]
+  );
+
+  const getOrdersForPatrolRecord = (recordId: string): MaintenanceOrder[] => {
+    return maintenanceOrders.filter((o) => o.patrolRecordId === recordId);
+  };
+
+  const getPatrolForOrder = (patrolRecordId?: string): PatrolRecord | undefined => {
+    if (!patrolRecordId) return undefined;
+    return patrolRecords.find((r) => r.id === patrolRecordId);
+  };
+
   return (
     <div style={{ padding: 16, height: '100%', overflow: 'auto' }}>
       <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
@@ -706,7 +794,7 @@ export default function PatrolRecord() {
         onOk={handleSaveCheckin}
         okText="提交打卡"
         cancelText="取消"
-        width={800}
+        width={880}
         maskClosable={false}
         okButtonProps={{ disabled: patrolDevices.length === 0 }}
       >
@@ -753,10 +841,15 @@ export default function PatrolRecord() {
                   {manualOrderCount} 台已手动转单
                 </Tag>
               )}
+              {linkedOrderCount > 0 && (
+                <Tag color="purple" icon={<LinkOutlined />}>
+                  {linkedOrderCount} 台关联工单
+                </Tag>
+              )}
             </Space>
           </Divider>
 
-          <div style={{ maxHeight: 300, overflow: 'auto', marginBottom: 16 }}>
+          <div style={{ maxHeight: 340, overflow: 'auto', marginBottom: 16 }}>
             {patrolDevices.length === 0 ? (
               <Empty description="暂无检查设备" style={{ padding: 40 }} />
             ) : (
@@ -765,6 +858,12 @@ export default function PatrolRecord() {
                 dataSource={patrolDevices}
                 renderItem={(device) => {
                   const isManualOrder = manualOrderDeviceIds.includes(device.deviceId);
+                  const linkedOrderId = linkedOrderMap[device.deviceId];
+                  const linkedOrder = linkedOrderId
+                    ? maintenanceOrders.find((o) => o.id === linkedOrderId)
+                    : null;
+                  const openOrders = getOpenOrdersForDevice(device.deviceId);
+
                   return (
                     <List.Item
                       key={device.deviceId}
@@ -776,50 +875,106 @@ export default function PatrolRecord() {
                     >
                       <List.Item.Meta
                         title={
-                          <Space>
-                            <span>{device.deviceName}</span>
+                          <Space wrap>
+                            <span style={{ fontWeight: 500 }}>{device.deviceName}</span>
+                            {openOrders.length > 0 && device.status === 'normal' && (
+                              <Tooltip title={`该设备有 ${openOrders.length} 张未完成工单`}>
+                                <Tag color="orange" icon={<ExclamationCircleOutlined />}>
+                                  {openOrders.length} 张进行中工单
+                                </Tag>
+                              </Tooltip>
+                            )}
                             {isManualOrder && device.status !== 'normal' && (
                               <Tag color="blue">已手动转单</Tag>
+                            )}
+                            {linkedOrder && device.status !== 'normal' && (
+                              <Tag color="purple" icon={<LinkOutlined />}>
+                                已关联: {linkedOrder.title}
+                              </Tag>
                             )}
                           </Space>
                         }
                         description={
-                          <Input
-                            size="small"
-                            placeholder="添加备注（可选）"
-                            value={device.note}
-                            onChange={(e) => handleDeviceNoteChange(device.deviceId, e.target.value)}
-                            style={{ width: 300 }}
-                          />
+                          <div>
+                            <Input
+                              size="small"
+                              placeholder="添加备注（可选）"
+                              value={device.note}
+                              onChange={(e) => handleDeviceNoteChange(device.deviceId, e.target.value)}
+                              style={{ width: 340, marginBottom: openOrders.length > 0 && device.status !== 'normal' ? 6 : 0 }}
+                            />
+                            {openOrders.length > 0 && device.status !== 'normal' && (
+                              <div style={{ fontSize: 12, color: '#d46b08' }}>
+                                <ExclamationCircleOutlined /> 该设备已有 {openOrders.length} 张未完成工单：
+                                {openOrders.map((o) => (
+                                  <Tag
+                                    key={o.id}
+                                    style={{ marginLeft: 6, marginTop: 4 }}
+                                    color={maintStatusColors[o.status]}
+                                  >
+                                    [{maintStatusNames[o.status]}] {o.title}
+                                  </Tag>
+                                ))}
+                              </div>
+                            )}
+                          </div>
                         }
                       />
-                      <Space size="middle">
-                        <Radio.Group
-                          size="small"
-                          value={device.status}
-                          onChange={(e) => handleDeviceStatusChange(device.deviceId, e.target.value)}
-                        >
-                          <Radio.Button value="normal">正常</Radio.Button>
-                          <Radio.Button value="fault">故障</Radio.Button>
-                          <Radio.Button value="offline">离线</Radio.Button>
-                        </Radio.Group>
+                      <div style={{ flexShrink: 0, minWidth: 360 }}>
+                        <div style={{ marginBottom: 8, textAlign: 'right' }}>
+                          <Radio.Group
+                            size="small"
+                            value={device.status}
+                            onChange={(e) => handleDeviceStatusChange(device.deviceId, e.target.value)}
+                          >
+                            <Radio.Button value="normal">正常</Radio.Button>
+                            <Radio.Button value="fault">故障</Radio.Button>
+                            <Radio.Button value="offline">离线</Radio.Button>
+                          </Radio.Group>
+                        </div>
                         {device.status !== 'normal' && (
-                          <Tooltip title={isManualOrder ? '已创建工单，点击可重新创建' : '快速创建工单'}>
-                            <Button
-                              size="small"
-                              type={isManualOrder ? 'default' : 'primary'}
-                              danger={!isManualOrder}
-                              icon={<ToolOutlined />}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleCreateMaintFromAbnormal(device);
-                              }}
-                            >
-                              {isManualOrder ? '重新转单' : '转工单'}
-                            </Button>
-                          </Tooltip>
+                          <div style={{ textAlign: 'right' }}>
+                            <Space size="small" wrap>
+                              <Tooltip title="转工单到新维修单">
+                                <Button
+                                  size="small"
+                                  type={!isManualOrder && !linkedOrder ? 'primary' : 'default'}
+                                  danger={!isManualOrder && !linkedOrder}
+                                  icon={<ToolOutlined />}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleCreateMaintFromAbnormal(device);
+                                  }}
+                                >
+                                  {isManualOrder ? '重新转单' : '新建工单'}
+                                </Button>
+                              </Tooltip>
+                              {openOrders.length > 0 && !linkedOrder && (
+                                <Tooltip title="关联已有未完成工单，不再自动补单">
+                                  <Button
+                                    size="small"
+                                    icon={<LinkOutlined />}
+                                    onClick={() => handleLinkExistingOrder(device)}
+                                  >
+                                    关联工单
+                                  </Button>
+                                </Tooltip>
+                              )}
+                              {linkedOrder && (
+                                <Tooltip title="取消本次关联">
+                                  <Button
+                                    size="small"
+                                    icon={<ReloadOutlined />}
+                                    onClick={() => handleCancelLinkOrder(device.deviceId)}
+                                  >
+                                    取消关联
+                                  </Button>
+                                </Tooltip>
+                              )}
+                            </Space>
+                          </div>
                         )}
-                      </Space>
+                      </div>
                     </List.Item>
                   );
                 }}
@@ -832,22 +987,19 @@ export default function PatrolRecord() {
           </Form.Item>
 
           {abnormalDevicesCount > 0 && (
-            <div
-              style={{
-                padding: '10px 12px',
-                background: '#fff1f0',
-                border: '1px solid #ffa39e',
-                borderRadius: 4,
-                color: '#cf1322',
-                fontSize: 12,
-              }}
-            >
-              <ExclamationCircleOutlined style={{ marginRight: 4 }} />
-              检测到 {abnormalDevicesCount} 台异常设备
-              {manualOrderCount > 0
-                ? `，其中 ${manualOrderCount} 台已手动转单，将自动生成 ${Math.max(0, abnormalDevicesCount - manualOrderCount)} 张工单`
-                : '，提交后将自动生成对应维修工单'}
-            </div>
+            <Alert
+              type="warning"
+              showIcon
+              style={{ marginBottom: 0 }}
+              message={
+                <span>
+                  检测到 {abnormalDevicesCount} 台异常设备
+                  {manualOrderCount > 0 && `，${manualOrderCount} 台已手动转单`}
+                  {linkedOrderCount > 0 && `，${linkedOrderCount} 台关联已有工单`}
+                  {`，将自动生成 ${Math.max(0, abnormalDevicesCount - manualOrderCount - linkedOrderCount)} 张工单`}
+                </span>
+              }
+            />
           )}
         </Form>
       </Modal>
@@ -857,7 +1009,7 @@ export default function PatrolRecord() {
         open={detailModalVisible}
         onCancel={() => setDetailModalVisible(false)}
         footer={null}
-        width={600}
+        width={680}
       >
         {selectedRecord && (
           <div>
@@ -918,10 +1070,61 @@ export default function PatrolRecord() {
               />
             </div>
 
-            <div>
+            <div style={{ marginBottom: 16 }}>
               <div style={{ fontWeight: 'bold', marginBottom: 8 }}>巡检备注</div>
               <div style={{ color: '#666' }}>{selectedRecord.remark || '无'}</div>
             </div>
+
+            {getOrdersForPatrolRecord(selectedRecord.id).length > 0 && (
+              <div>
+                <Divider orientation="left" style={{ margin: '12px 0' }}>
+                  关联维修工单 ({getOrdersForPatrolRecord(selectedRecord.id).length} 张)
+                </Divider>
+                <List
+                  size="small"
+                  bordered
+                  dataSource={getOrdersForPatrolRecord(selectedRecord.id)}
+                  renderItem={(order) => (
+                    <List.Item
+                      actions={[
+                        <Button
+                          key="view"
+                          size="small"
+                          type="link"
+                          onClick={() => {
+                            handleViewMaintDetail(order);
+                            setDetailModalVisible(false);
+                          }}
+                        >
+                          查看工单
+                        </Button>,
+                      ]}
+                    >
+                      <List.Item.Meta
+                        title={
+                          <Space>
+                            <span>{order.title}</span>
+                            <Tag color={maintLevelColors[order.level]}>{maintLevelNames[order.level]}</Tag>
+                            <Tag color={maintStatusColors[order.status]}>{maintStatusNames[order.status]}</Tag>
+                            <Tag>{order.source === 'patrol' ? (order.patrolRecordId ? '巡检自动生成' : '巡检关联') : '手动'}</Tag>
+                          </Space>
+                        }
+                        description={
+                          <span>
+                            {order.deviceName} · 创建 {order.createdAt}
+                            {order.linkedPatrolNote && (
+                              <span style={{ marginLeft: 12, color: '#1890ff' }}>
+                                <LinkOutlined /> {order.linkedPatrolNote}
+                              </span>
+                            )}
+                          </span>
+                        }
+                      />
+                    </List.Item>
+                  )}
+                />
+              </div>
+            )}
           </div>
         )}
       </Modal>
@@ -931,7 +1134,7 @@ export default function PatrolRecord() {
         open={maintDetailVisible}
         onCancel={() => setMaintDetailVisible(false)}
         footer={null}
-        width={600}
+        width={680}
       >
         {selectedMaint && (
           <div>
@@ -947,11 +1150,26 @@ export default function PatrolRecord() {
                   {maintStatusNames[selectedMaint.status]}
                 </Tag>
                 <Tag>
-                  {selectedMaint.source === 'patrol' ? '巡检来源' : selectedMaint.source === 'alarm' ? '告警来源' : '手动创建'}
+                  {selectedMaint.source === 'patrol'
+                    ? selectedMaint.patrolRecordId
+                      ? '巡检来源'
+                      : '巡检关联'
+                    : selectedMaint.source === 'alarm'
+                    ? '告警来源'
+                    : '手动创建'}
                 </Tag>
                 <span style={{ color: '#999' }}>设备: {selectedMaint.deviceName}</span>
               </Space>
             </div>
+
+            <Descriptions size="small" column={2} bordered style={{ marginBottom: 16 }}>
+              <Descriptions.Item label="创建人">{selectedMaint.creator}</Descriptions.Item>
+              <Descriptions.Item label="指派给">{selectedMaint.assignee}</Descriptions.Item>
+              <Descriptions.Item label="创建时间">{selectedMaint.createdAt}</Descriptions.Item>
+              <Descriptions.Item label="完成时间">
+                {selectedMaint.completedAt || '未完成'}
+              </Descriptions.Item>
+            </Descriptions>
 
             <div style={{ marginBottom: 16 }}>
               <div style={{ fontWeight: 'bold', marginBottom: 8 }}>问题描述</div>
@@ -960,20 +1178,60 @@ export default function PatrolRecord() {
               </div>
             </div>
 
-            <Row gutter={16} style={{ marginBottom: 16 }}>
-              <Col span={8}>
-                <div style={{ color: '#999', fontSize: 12 }}>创建人</div>
-                <div>{selectedMaint.creator}</div>
-              </Col>
-              <Col span={8}>
-                <div style={{ color: '#999', fontSize: 12 }}>指派给</div>
-                <div>{selectedMaint.assignee}</div>
-              </Col>
-              <Col span={8}>
-                <div style={{ color: '#999', fontSize: 12 }}>创建时间</div>
-                <div>{selectedMaint.createdAt}</div>
-              </Col>
-            </Row>
+            {selectedMaint.patrolRecordId && (
+              <div style={{ marginBottom: 16 }}>
+                <Divider orientation="left" style={{ margin: '12px 0' }}>
+                  <LinkOutlined /> 来源巡检
+                </Divider>
+                {(() => {
+                  const patrol = getPatrolForOrder(selectedMaint.patrolRecordId);
+                  return patrol ? (
+                    <Card size="small" style={{ background: '#f0f5ff', border: '1px solid #adc6ff' }}>
+                      <Row gutter={16}>
+                        <Col span={6}>
+                          <div style={{ color: '#999', fontSize: 12 }}>日期</div>
+                          <div style={{ fontWeight: 'bold' }}>{patrol.date}</div>
+                        </Col>
+                        <Col span={6}>
+                          <div style={{ color: '#999', fontSize: 12 }}>时间</div>
+                          <div>{patrol.time}</div>
+                        </Col>
+                        <Col span={6}>
+                          <div style={{ color: '#999', fontSize: 12 }}>类型</div>
+                          <Tag color={patrolTypeColors[patrol.type]}>{patrolTypeNames[patrol.type]}</Tag>
+                        </Col>
+                        <Col span={6}>
+                          <div style={{ color: '#999', fontSize: 12 }}>巡检员</div>
+                          <div>{patrol.inspector}</div>
+                        </Col>
+                      </Row>
+                      {selectedMaint.linkedPatrolNote && (
+                        <div style={{ marginTop: 12 }}>
+                          <div style={{ color: '#999', fontSize: 12 }}>巡检备注</div>
+                          <div style={{ color: '#595959' }}>{selectedMaint.linkedPatrolNote}</div>
+                        </div>
+                      )}
+                      <div style={{ marginTop: 12 }}>
+                        <Button
+                          size="small"
+                          type="link"
+                          icon={<EyeOutlined />}
+                          onClick={() => {
+                            setSelectedRecord(patrol);
+                            setMaintDetailVisible(false);
+                            setDetailModalVisible(true);
+                          }}
+                        >
+                          查看巡检详情
+                        </Button>
+                      </div>
+                    </Card>
+                  ) : (
+                    <div style={{ color: '#999' }}>巡检记录 #{selectedMaint.patrolRecordId}</div>
+                  );
+                })()}
+              </div>
+            )}
 
             <div>
               <div style={{ fontWeight: 'bold', marginBottom: 8 }}>备注</div>
@@ -1047,6 +1305,51 @@ export default function PatrolRecord() {
             <TextArea rows={2} placeholder="其他备注信息（可选）" />
           </Form.Item>
         </Form>
+      </Modal>
+
+      <Modal
+        title="关联已有工单"
+        open={linkOrderVisible}
+        onCancel={() => {
+          setLinkOrderVisible(false);
+          setLinkTargetDevice(null);
+        }}
+        onOk={handleSaveLinkOrder}
+        okText="确认关联"
+        cancelText="取消"
+        width={560}
+        maskClosable={false}
+      >
+        {linkTargetDevice && (
+          <div>
+            <Alert
+              type="info"
+              showIcon
+              style={{ marginBottom: 16 }}
+              message={
+                <span>
+                  为设备 <b>{linkTargetDevice.deviceName}</b> 关联已有的维修工单，
+                  提交巡检时将不再自动补单，并同步本次巡检备注到工单
+                </span>
+              }
+            />
+            <Form form={linkForm} layout="vertical">
+              <Form.Item
+                label="选择要关联的未完成工单"
+                name="orderId"
+                rules={[{ required: true, message: '请选择要关联的工单' }]}
+              >
+                <Select
+                  placeholder="请选择一张未完成工单"
+                  options={getOpenOrdersForDevice(linkTargetDevice.deviceId).map((o) => ({
+                    value: o.id,
+                    label: `[${maintStatusNames[o.status]}] ${o.title}（${o.createdAt}）`,
+                  }))}
+                />
+              </Form.Item>
+            </Form>
+          </div>
+        )}
       </Modal>
 
       <Modal

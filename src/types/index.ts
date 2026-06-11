@@ -71,6 +71,8 @@ export interface ScheduleItem {
   repeat: 'once' | 'daily' | 'weekly' | 'workday';
   date?: string;
   weekday?: number;
+  validFrom?: string;
+  validTo?: string;
   deviceIds: string[];
   contentIds: string[];
   status: 'scheduled' | 'running' | 'completed' | 'paused';
@@ -149,6 +151,7 @@ export interface MaintenanceOrder {
   remark: string;
   source?: 'manual' | 'patrol' | 'alarm';
   patrolRecordId?: string;
+  linkedPatrolNote?: string;
 }
 
 export interface OperationLog {

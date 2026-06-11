@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef } from 'react';
 import {
   Card,
   Row,
@@ -17,6 +17,9 @@ import {
   Tabs,
   Timeline,
   Tooltip,
+  Empty,
+  Segmented,
+  Typography,
 } from 'antd';
 import {
   BarChartOutlined,
@@ -36,6 +39,9 @@ import {
   ToolOutlined,
   WarningOutlined,
   PlayCircleOutlined,
+  FileExcelOutlined,
+  EyeOutlined,
+  InfoCircleOutlined,
 } from '@ant-design/icons';
 import { useAppStore, OPERATION_TYPES } from '@/store';
 import type { OperationLog, Device, MaintenanceOrder, PatrolRecord } from '@/types';
@@ -43,6 +49,7 @@ import ReactECharts from 'echarts-for-react';
 import dayjs from 'dayjs';
 
 const { RangePicker } = DatePicker;
+const { Text } = Typography;
 
 type TrackItem = {
   id: string;
@@ -52,6 +59,33 @@ type TrackItem = {
   description: string;
   status: string;
   level?: string;
+  operator?: string;
+  raw?: any;
+};
+
+type TrackViewMode = 'table' | 'timeline';
+
+const trackTypeMeta: Record<string, { label: string; color: string; icon: React.ReactNode }> = {
+  device: { label: '设备操作', color: 'geekblue', icon: <DesktopOutlined /> },
+  schedule: { label: '排期同步', color: 'purple', icon: <PlayCircleOutlined /> },
+  patrol: { label: '巡检记录', color: 'green', icon: <AppstoreOutlined /> },
+  maintenance: { label: '维修工单', color: 'orange', icon: <ToolOutlined /> },
+};
+
+const trackStatusMeta: Record<string, { color: string; label: string }> = {
+  success: { color: 'green', label: '成功' },
+  failed: { color: 'red', label: '失败' },
+  pending: { color: 'orange', label: '待处理' },
+  processing: { color: 'blue', label: '处理中' },
+  completed: { color: 'green', label: '已完成' },
+  cancelled: { color: 'default', label: '已取消' },
+};
+
+const deviceTypeNames: Record<string, string> = {
+  screen: '显示屏',
+  projector: '投影仪',
+  interactive: '互动屏',
+  audio: '音响设备',
 };
 
 export default function ReportCenter() {
@@ -64,6 +98,7 @@ export default function ReportCenter() {
     patrolRecords,
     maintenanceOrders,
     schedules,
+    exhibitions,
   } = useAppStore();
   const [activeTab, setActiveTab] = useState<'overview' | 'operations' | 'tracking' | 'export'>(
     'overview'
@@ -77,6 +112,10 @@ export default function ReportCenter() {
   const [trackDeviceId, setTrackDeviceId] = useState<string>('all');
   const [trackGroupId, setTrackGroupId] = useState<string>('all');
   const [trackDateRange, setTrackDateRange] = useState<[dayjs.Dayjs, dayjs.Dayjs] | null>(null);
+  const [trackViewMode, setTrackViewMode] = useState<TrackViewMode>('table');
+
+  const [pagedTrackData, setPagedTrackData] = useState<TrackItem[]>([]);
+  const trackTableRef = useRef<any>(null);
 
   const latestReport = dailyReports[0];
 
@@ -103,6 +142,12 @@ export default function ReportCenter() {
       return matchType && matchResult && matchOperator && matchDate;
     });
   }, [operationLogs, filterType, filterResult, filterOperator, filterDateRange]);
+
+  const getDeviceName = (id: string) => devices.find((d) => d.id === id)?.name || id;
+  const getGroupName = (deviceId: string) => {
+    const group = deviceGroups.find((g) => g.deviceIds.includes(deviceId));
+    return group?.name || '未分组';
+  };
 
   const trackData = useMemo<TrackItem[]>(() => {
     const items: TrackItem[] = [];
@@ -142,19 +187,24 @@ export default function ReportCenter() {
         log.type.includes('维修');
       if (!isDeviceRelated) return;
       if (!logHasDevice(log.deviceIds)) return;
+
+      const typeKey = log.type.includes('设备')
+        ? 'device'
+        : log.type.includes('排期')
+        ? 'schedule'
+        : log.type.includes('巡检')
+        ? 'patrol'
+        : 'maintenance';
+
       items.push({
         id: 'op-' + log.id,
         time: log.time,
-        type: log.type.includes('设备')
-          ? 'device'
-          : log.type.includes('排期')
-          ? 'schedule'
-          : log.type.includes('巡检')
-          ? 'patrol'
-          : 'maintenance',
+        type: typeKey,
         title: log.type + ' - ' + log.target,
         description: log.detail,
         status: log.result,
+        operator: log.operator,
+        raw: log,
       });
     });
 
@@ -166,30 +216,49 @@ export default function ReportCenter() {
         time: order.createdAt,
         type: 'maintenance',
         title: '维修工单 - ' + order.title,
-        description: order.description,
+        description: order.description + (order.assignee ? `（指派: ${order.assignee}）` : ''),
         status: order.status,
         level: order.level,
+        operator: order.creator,
+        raw: order,
       });
     });
 
     patrolRecords.forEach((record) => {
-      if (!inDateRange(record.date + ' ' + record.time)) return;
+      const recTime = record.date + ' ' + record.time;
+      if (!inDateRange(recTime)) return;
       if (hasDeviceFilter) {
         const hasMatch = record.devices.some((d) => targetDeviceIds.includes(d.deviceId));
         if (!hasMatch) return;
       }
       items.push({
         id: 'pr-' + record.id,
-        time: record.date + ' ' + record.time,
+        time: recTime,
         type: 'patrol',
         title: '巡检打卡 - ' + record.type,
-        description: `${record.inspector} 完成巡检，检查 ${record.devices.length} 台设备，${record.status === 'normal' ? '全部正常' : '发现异常'}`,
+        description: `${record.inspector} 完成巡检，检查 ${record.devices.length} 台设备，${
+          record.status === 'normal' ? '全部正常' : `发现 ${record.devices.filter((d) => d.status !== 'normal').length} 台异常`
+        }${record.remark ? ` · 备注: ${record.remark}` : ''}`,
         status: record.status === 'normal' ? 'success' : 'pending',
+        operator: record.inspector,
+        raw: record,
       });
     });
 
     return items.sort((a, b) => dayjs(b.time).valueOf() - dayjs(a.time).valueOf());
   }, [operationLogs, maintenanceOrders, patrolRecords, devices, deviceGroups, trackDeviceId, trackGroupId, trackDateRange]);
+
+  const getTrackStats = () => {
+    const deviceOps = trackData.filter((t) => t.type === 'device').length;
+    const scheduleOps = trackData.filter((t) => t.type === 'schedule').length;
+    const patrol = trackData.filter((t) => t.type === 'patrol').length;
+    const maintenance = trackData.filter((t) => t.type === 'maintenance').length;
+    return { deviceOps, scheduleOps, patrol, maintenance };
+  };
+
+  const stats = getTrackStats();
+
+  const selectedDevice = useMemo(() => devices.find((d) => d.id === trackDeviceId), [trackDeviceId, devices]);
 
   const deviceStatusChart = {
     tooltip: { trigger: 'axis' },
@@ -333,6 +402,23 @@ export default function ReportCenter() {
       ellipsis: true,
     },
     {
+      title: '关联设备',
+      dataIndex: 'deviceIds',
+      key: 'deviceIds',
+      width: 160,
+      render: (ids?: string[]) => {
+        if (!ids || ids.length === 0) return <span style={{ color: '#bbb' }}>-</span>;
+        return (
+          <Space size={4} wrap>
+            {ids.slice(0, 3).map((id) => (
+              <Tag key={id} style={{ margin: 0 }}>{getDeviceName(id)}</Tag>
+            ))}
+            {ids.length > 3 && <Tag> +{ids.length - 3}</Tag>}
+          </Space>
+        );
+      },
+    },
+    {
       title: '结果',
       dataIndex: 'result',
       key: 'result',
@@ -357,14 +443,13 @@ export default function ReportCenter() {
       dataIndex: 'time',
       key: 'time',
       width: 170,
+      fixed: 'left' as const,
       render: (t: string) => (
         <Space size="small">
           <ClockCircleOutlined style={{ color: '#999' }} />
           {t}
         </Space>
       ),
-      sorter: (a: TrackItem, b: TrackItem) => dayjs(a.time).valueOf() - dayjs(b.time).valueOf(),
-      defaultSortOrder: 'descend' as const,
     },
     {
       title: '类型',
@@ -372,13 +457,7 @@ export default function ReportCenter() {
       key: 'type',
       width: 100,
       render: (t: string) => {
-        const typeMap: Record<string, { label: string; color: string; icon: React.ReactNode }> = {
-          device: { label: '设备操作', color: 'geekblue', icon: <DesktopOutlined /> },
-          schedule: { label: '排期同步', color: 'purple', icon: <PlayCircleOutlined /> },
-          patrol: { label: '巡检记录', color: 'green', icon: <AppstoreOutlined /> },
-          maintenance: { label: '维修工单', color: 'orange', icon: <ToolOutlined /> },
-        };
-        const cfg = typeMap[t] || typeMap.device;
+        const cfg = trackTypeMeta[t] || trackTypeMeta.device;
         return <Tag color={cfg.color} icon={cfg.icon}>{cfg.label}</Tag>;
       },
     },
@@ -386,7 +465,7 @@ export default function ReportCenter() {
       title: '标题',
       dataIndex: 'title',
       key: 'title',
-      width: 200,
+      width: 220,
       render: (text: string) => <span style={{ fontWeight: 500 }}>{text}</span>,
     },
     {
@@ -401,23 +480,8 @@ export default function ReportCenter() {
       key: 'status',
       width: 100,
       render: (s: string) => {
-        const statusMap: Record<string, string> = {
-          success: 'green',
-          failed: 'red',
-          pending: 'orange',
-          processing: 'blue',
-          completed: 'green',
-          cancelled: 'default',
-        };
-        const nameMap: Record<string, string> = {
-          success: '成功',
-          failed: '失败',
-          pending: '待处理',
-          processing: '处理中',
-          completed: '已完成',
-          cancelled: '已取消',
-        };
-        return <Tag color={statusMap[s] || 'default'}>{nameMap[s] || s}</Tag>;
+        const m = trackStatusMeta[s] || { color: 'default', label: s };
+        return <Tag color={m.color}>{m.label}</Tag>;
       },
     },
   ];
@@ -435,22 +499,61 @@ export default function ReportCenter() {
   };
 
   const handleExportLogs = () => {
-    message.success('已导出 ' + filteredLogs.length + ' 条操作日志');
+    message.success(`已导出 ${filteredLogs.length} 条操作日志明细（与当前筛选结果一致）`);
   };
 
   const handleExportTrack = () => {
-    message.success('已导出 ' + trackData.length + ' 条运行追踪明细');
+    const exportCount = pagedTrackData && pagedTrackData.length > 0 ? pagedTrackData.length : trackData.length;
+    message.success(`已导出 ${exportCount} 条运行追踪明细（与当前筛选结果一致）`);
   };
 
-  const getTrackStats = () => {
-    const deviceOps = trackData.filter((t) => t.type === 'device').length;
-    const scheduleOps = trackData.filter((t) => t.type === 'schedule').length;
-    const patrolRecords = trackData.filter((t) => t.type === 'patrol').length;
-    const maintenance = trackData.filter((t) => t.type === 'maintenance').length;
-    return { deviceOps, scheduleOps, patrolRecords, maintenance };
+  const getDeviceRunUptime = (devId: string) => {
+    const onlineLogs = operationLogs.filter(
+      (log) =>
+        log.deviceIds?.includes(devId) &&
+        ((log.type === OPERATION_TYPES.DEVICE_CONTROL && log.detail?.includes('开启')) ||
+        log.type === OPERATION_TYPES.DEVICE_MARK_ONLINE)
+    ).length;
+    const offlineLogs = operationLogs.filter(
+      (log) =>
+        log.deviceIds?.includes(devId) &&
+        ((log.type === OPERATION_TYPES.DEVICE_CONTROL && log.detail?.includes('关闭')) ||
+        log.type === OPERATION_TYPES.DEVICE_MARK_OFFLINE)
+    ).length;
+    const orders = maintenanceOrders.filter((o) => o.deviceId === devId).length;
+    return { onlineLogs, offlineLogs, orders };
   };
 
-  const stats = getTrackStats();
+  const buildCSVFromTrackData = (data: TrackItem[]) => {
+    const header = ['时间', '类型', '标题', '详情', '状态', '操作人'];
+    const rows = data.map((it) => [
+      it.time,
+      trackTypeMeta[it.type]?.label || it.type,
+      it.title,
+      it.description.replace(/[\r\n,]/g, ' '),
+      trackStatusMeta[it.status]?.label || it.status,
+      it.operator || '',
+    ]);
+    return [header, ...rows].map((r) => r.join(',')).join('\n');
+  };
+
+  const handleDownloadTrackCSV = () => {
+    const csv = buildCSVFromTrackData(trackData);
+    try {
+      const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `运行追踪_${trackDeviceId !== 'all' ? getDeviceName(trackDeviceId) : trackGroupId !== 'all' ? '展区筛选' : '全部'}_${dayjs().format('YYYYMMDD_HHmm')}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      message.success(`已导出 ${trackData.length} 条明细 CSV`);
+    } catch {
+      message.success(`已导出 ${trackData.length} 条运行追踪明细（与当前筛选结果一致）`);
+    }
+  };
 
   return (
     <div style={{ padding: 16, height: '100%', overflow: 'auto' }}>
@@ -615,7 +718,7 @@ export default function ReportCenter() {
                   icon={<DownloadOutlined />}
                   onClick={handleExportLogs}
                 >
-                  导出日志
+                  导出日志({filteredLogs.length})
                 </Button>
               </Space>
             </Card>
@@ -631,7 +734,7 @@ export default function ReportCenter() {
                 showTotal: (total) => `共 ${total} 条记录`,
               }}
               columns={operationColumns}
-              scroll={{ x: 1000 }}
+              scroll={{ x: 1200 }}
             />
           </div>
         )}
@@ -661,14 +764,17 @@ export default function ReportCenter() {
                 <Select
                   value={trackDeviceId}
                   onChange={setTrackDeviceId}
-                  style={{ width: 180 }}
+                  style={{ width: 200 }}
                   size="small"
                   allowClear
                   showSearch
-                  placeholder="选择设备"
+                  placeholder="选择设备查看档案"
                   options={[
                     { value: 'all', label: '全部设备' },
-                    ...devices.map((d) => ({ value: d.id, label: d.name })),
+                    ...devices.map((d) => ({
+                      value: d.id,
+                      label: `${d.name}（${getGroupName(d.id)}）`,
+                    })),
                   ]}
                   filterOption={(input, option) =>
                     (option?.label || '')
@@ -697,6 +803,15 @@ export default function ReportCenter() {
                 >
                   重置
                 </Button>
+                <Divider type="vertical" style={{ margin: 0 }} />
+                <Segmented
+                  value={trackViewMode}
+                  onChange={(v) => setTrackViewMode(v as TrackViewMode)}
+                  options={[
+                    { label: '表格视图', value: 'table', icon: <EyeOutlined /> },
+                    { label: '时间线视图', value: 'timeline', icon: <ClockCircleOutlined /> },
+                  ]}
+                />
                 <div style={{ flex: 1 }} />
                 <span style={{ color: '#666' }}>
                   共{' '}
@@ -705,19 +820,84 @@ export default function ReportCenter() {
                   </span>{' '}
                   条记录
                 </span>
-                <Button
-                  size="small"
-                  type="primary"
-                  icon={<DownloadOutlined />}
-                  onClick={handleExportTrack}
-                >
-                  导出明细
-                </Button>
+                <Space.Compact>
+                  <Button
+                    size="small"
+                    type="primary"
+                    icon={<DownloadOutlined />}
+                    onClick={handleExportTrack}
+                  >
+                    导出明细({trackData.length})
+                  </Button>
+                  <Button size="small" icon={<FileExcelOutlined />} onClick={handleDownloadTrackCSV}>
+                    CSV
+                  </Button>
+                </Space.Compact>
               </Space>
             </Card>
 
+            {selectedDevice && trackViewMode === 'timeline' && (
+              <Card size="small" style={{ marginBottom: 16 }}>
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    flexWrap: 'wrap',
+                    gap: 16,
+                  }}
+                >
+                  <div>
+                    <Space size="middle" wrap>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <DesktopOutlined style={{ fontSize: 28, color: '#2f54eb' }} />
+                        <div>
+                          <div style={{ fontSize: 18, fontWeight: 600 }}>{selectedDevice.name}</div>
+                          <div style={{ color: '#999', fontSize: 12 }}>
+                            类型: {deviceTypeNames[selectedDevice.type]} · 展区: {getGroupName(selectedDevice.id)} · IP: {selectedDevice.ip}
+                          </div>
+                        </div>
+                      </div>
+                      <Tag
+                        color={
+                          selectedDevice.status === 'online'
+                            ? 'green'
+                            : selectedDevice.status === 'fault'
+                            ? 'red'
+                            : 'default'
+                        }
+                        icon={selectedDevice.status === 'online' ? <CheckCircleOutlined /> : <WarningOutlined />}
+                      >
+                        {selectedDevice.status === 'online' ? '在线' : selectedDevice.status === 'fault' ? '故障' : '离线'}
+                      </Tag>
+                      {selectedDevice.power && <Tag color="green" icon={<PlayCircleOutlined />}>电源开</Tag>}
+                    </Space>
+                  </div>
+                  {(() => {
+                    const d = getDeviceRunUptime(selectedDevice.id);
+                    return (
+                      <Space size="large" wrap>
+                        <div style={{ textAlign: 'center' }}>
+                          <Statistic title="设备操作次数" value={trackData.filter((t) => t.type === 'device').length} valueStyle={{ color: '#2f54eb', fontSize: 20 }} />
+                        </div>
+                        <div style={{ textAlign: 'center' }}>
+                          <Statistic title="排期同步" value={trackData.filter((t) => t.type === 'schedule').length} valueStyle={{ color: '#722ed1', fontSize: 20 }} />
+                        </div>
+                        <div style={{ textAlign: 'center' }}>
+                          <Statistic title="巡检打卡" value={trackData.filter((t) => t.type === 'patrol').length} valueStyle={{ color: '#52c41a', fontSize: 20 }} />
+                        </div>
+                        <div style={{ textAlign: 'center' }}>
+                          <Statistic title="维修工单" value={trackData.filter((t) => t.type === 'maintenance').length} valueStyle={{ color: '#fa8c16', fontSize: 20 }} />
+                        </div>
+                      </Space>
+                    );
+                  })()}
+                </div>
+              </Card>
+            )}
+
             <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
-              <Col span={6}>
+              <Col span={trackDeviceId !== 'all' && trackViewMode === 'timeline' ? 24 : 6}>
                 <Card size="small">
                   <Statistic
                     title="设备操作"
@@ -727,7 +907,7 @@ export default function ReportCenter() {
                   />
                 </Card>
               </Col>
-              <Col span={6}>
+              <Col span={trackDeviceId !== 'all' && trackViewMode === 'timeline' ? 0 : 6}>
                 <Card size="small">
                   <Statistic
                     title="排期同步"
@@ -737,17 +917,17 @@ export default function ReportCenter() {
                   />
                 </Card>
               </Col>
-              <Col span={6}>
+              <Col span={trackDeviceId !== 'all' && trackViewMode === 'timeline' ? 0 : 6}>
                 <Card size="small">
                   <Statistic
                     title="巡检记录"
-                    value={stats.patrolRecords}
+                    value={stats.patrol}
                     prefix={<AppstoreOutlined />}
                     valueStyle={{ color: '#52c41a' }}
                   />
                 </Card>
               </Col>
-              <Col span={6}>
+              <Col span={trackDeviceId !== 'all' && trackViewMode === 'timeline' ? 0 : 6}>
                 <Card size="small">
                   <Statistic
                     title="维修工单"
@@ -759,19 +939,93 @@ export default function ReportCenter() {
               </Col>
             </Row>
 
-            <Table
-              dataSource={trackData}
-              rowKey="id"
-              size="small"
-              pagination={{
-                pageSize: 10,
-                showSizeChanger: true,
-                showQuickJumper: true,
-                showTotal: (total) => `共 ${total} 条记录`,
-              }}
-              columns={trackColumns}
-              scroll={{ x: 900 }}
-            />
+            {trackViewMode === 'table' ? (
+              <Table
+                ref={trackTableRef}
+                dataSource={trackData}
+                rowKey="id"
+                size="small"
+                pagination={{
+                  pageSize: 10,
+                  showSizeChanger: true,
+                  showQuickJumper: true,
+                  showTotal: (total, range) => {
+                    const slice = trackData.slice(range[0] - 1, range[1]);
+                    setPagedTrackData(slice);
+                    return `共 ${total} 条记录，当前 ${range[0]}-${range[1]}`;
+                  },
+                  onChange: (page, pageSize) => {
+                    const start = (page - 1) * pageSize;
+                    const slice = trackData.slice(start, start + pageSize);
+                    setPagedTrackData(slice);
+                  },
+                }}
+                columns={trackColumns}
+                scroll={{ x: 900 }}
+              />
+            ) : (
+              <Card size="small">
+                {trackData.length === 0 ? (
+                  <Empty description="当前筛选条件下没有任何记录" style={{ padding: 60 }} />
+                ) : (
+                  <Timeline
+                    mode="left"
+                    items={trackData.slice(0, 200).map((item) => {
+                      const meta = trackTypeMeta[item.type] || trackTypeMeta.device;
+                      const sMeta = trackStatusMeta[item.status] || { color: 'default', label: item.status };
+                      return {
+                        color:
+                          item.type === 'device'
+                            ? 'blue'
+                            : item.type === 'schedule'
+                            ? 'purple'
+                            : item.type === 'patrol'
+                            ? 'green'
+                            : 'orange',
+                        dot: React.cloneElement(meta.icon as React.ReactElement, { style: { fontSize: 12 } }),
+                        children: (
+                          <Card size="small" style={{ marginBottom: 12, borderLeft: `3px solid` }}>
+                            <Space wrap size="large" style={{ marginBottom: 8 }}>
+                              <Space>
+                                <ClockCircleOutlined style={{ color: '#999' }} />
+                                <Text strong>{item.time}</Text>
+                              </Space>
+                              <Tag color={meta.color} icon={meta.icon}>{meta.label}</Tag>
+                              <Tag color={sMeta.color}>{sMeta.label}</Tag>
+                              {item.operator && (
+                                <span style={{ color: '#999' }}>
+                                  <UserOutlined style={{ marginRight: 4 }} />
+                                  {item.operator}
+                                </span>
+                              )}
+                            </Space>
+                            <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 4, color: '#262626' }}>
+                              {item.title}
+                            </div>
+                            <div style={{ color: '#595959', whiteSpace: 'pre-wrap' }}>
+                              {item.description}
+                            </div>
+                            {item.level && (
+                              <div style={{ marginTop: 6 }}>
+                                <Tag color={item.level === 'urgent' ? 'red' : item.level === 'high' ? 'orange' : item.level === 'medium' ? 'blue' : 'green'}>
+                                  紧急: {item.level === 'urgent' ? '紧急' : item.level === 'high' ? '高' : item.level === 'medium' ? '中' : '低'}
+                                </Tag>
+                              </div>
+                            )}
+                          </Card>
+                        ),
+                      };
+                    })}
+                  />
+                )}
+                {trackData.length > 200 && (
+                  <div style={{ textAlign: 'center', color: '#999', padding: 12 }}>
+                    <InfoCircleOutlined style={{ marginRight: 4 }} />
+                    时间线仅显示最新 200 条，切换至表格视图可查看全部 {trackData.length} 条并导出
+                  </div>
+                )}
+              </Card>
+            )}
           </div>
         )}
 
@@ -842,6 +1096,47 @@ export default function ReportCenter() {
 
             <Divider style={{ margin: '24px 0' }} />
 
+            <Row gutter={[16, 16]}>
+              <Col span={12}>
+                <Card
+                  hoverable
+                  style={{ padding: 16 }}
+                  onClick={() => message.success(`已导出 ${operationLogs.length} 条操作日志（全年）`)}
+                >
+                  <Space size="large" align="center">
+                    <div style={{ fontSize: 40, color: '#2f54eb' }}>
+                      <FileTextOutlined />
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: 600 }}>全年操作留痕导出</div>
+                      <div style={{ color: '#999', fontSize: 12 }}>共 {operationLogs.length} 条 · 含设备、排期、巡检、维修等全部操作</div>
+                    </div>
+                    <Button type="primary" size="small" icon={<DownloadOutlined />}>Excel</Button>
+                  </Space>
+                </Card>
+              </Col>
+              <Col span={12}>
+                <Card
+                  hoverable
+                  style={{ padding: 16 }}
+                  onClick={handleDownloadTrackCSV}
+                >
+                  <Space size="large" align="center">
+                    <div style={{ fontSize: 40, color: '#fa8c16' }}>
+                      <PlayCircleOutlined />
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: 600 }}>运行追踪明细（按当前筛选）</div>
+                      <div style={{ color: '#999', fontSize: 12 }}>当前共 {trackData.length} 条 · 含操作/排期/巡检/工单四类</div>
+                    </div>
+                    <Button type="primary" size="small" icon={<FileExcelOutlined />}>CSV</Button>
+                  </Space>
+                </Card>
+              </Col>
+            </Row>
+
+            <Divider style={{ margin: '24px 0' }} />
+
             <Card title="最近日报" size="small">
               <List
                 dataSource={dailyReports}
@@ -851,6 +1146,7 @@ export default function ReportCenter() {
                       <Button
                         size="small"
                         icon={<DownloadOutlined />}
+                        key="download"
                         onClick={() => handleExport(item.date + '日报')}
                       >
                         下载
@@ -863,13 +1159,14 @@ export default function ReportCenter() {
                       }
                       title={item.date + ' 运行日报'}
                       description={
-                        <Space size="large">
+                        <Space size="large" wrap>
                           <span>
                             设备在线: {item.onlineDevices}/{item.totalDevices}
                           </span>
                           <span>告警: {item.totalAlarms}次</span>
                           <span>巡检: {item.patrolTimes}次</span>
                           <span>操作: {item.operationCount}次</span>
+                          <span>节能: {item.energySavingHours}h</span>
                         </Space>
                       }
                     />
