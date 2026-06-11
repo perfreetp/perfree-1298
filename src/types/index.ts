@@ -105,7 +105,7 @@ export interface PatrolRecord {
   time: string;
   inspector: string;
   type: 'morning' | 'afternoon' | 'evening' | 'special';
-  status: 'normal' | 'issue';
+  status: 'normal' | 'abnormal';
   devices: PatrolDevice[];
   remark: string;
   images: string[];
@@ -116,6 +116,7 @@ export interface PatrolDevice {
   deviceName: string;
   status: 'normal' | 'fault' | 'offline';
   note: string;
+  groupId?: string;
 }
 
 export interface MaintenanceOrder {

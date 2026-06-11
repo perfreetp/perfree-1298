@@ -569,7 +569,7 @@ export const mockPatrolRecords: PatrolRecord[] = [
     time: '08:30',
     inspector: '王值班',
     type: 'morning',
-    status: 'issue',
+    status: 'abnormal',
     devices: [
       { deviceId: 'dev-1', deviceName: '大厅主大屏', status: 'normal', note: '' },
       { deviceId: 'dev-2', deviceName: '入口投影', status: 'normal', note: '' },

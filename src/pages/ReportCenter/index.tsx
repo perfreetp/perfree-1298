@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   Card,
   Row,
@@ -13,6 +13,7 @@ import {
   List,
   Statistic,
   Divider,
+  Form,
 } from 'antd';
 import {
   BarChartOutlined,
@@ -25,8 +26,11 @@ import {
   UserOutlined,
   CheckCircleOutlined,
   CloseCircleOutlined,
+  SearchOutlined,
+  ReloadOutlined,
 } from '@ant-design/icons';
-import { useAppStore } from '@/store';
+import { useAppStore, OPERATION_TYPES } from '@/store';
+import type { OperationLog } from '@/types';
 import ReactECharts from 'echarts-for-react';
 import dayjs from 'dayjs';
 
@@ -36,7 +40,35 @@ export default function ReportCenter() {
   const { dailyReports, operationLogs, devices, alarms, patrolRecords } = useAppStore();
   const [activeTab, setActiveTab] = useState<'overview' | 'operations' | 'export'>('overview');
 
+  const [filterType, setFilterType] = useState<string>('all');
+  const [filterResult, setFilterResult] = useState<string>('all');
+  const [filterDateRange, setFilterDateRange] = useState<[dayjs.Dayjs, dayjs.Dayjs] | null>(null);
+  const [filterOperator, setFilterOperator] = useState<string>('all');
+
   const latestReport = dailyReports[0];
+
+  const operationTypeList = Object.values(OPERATION_TYPES);
+  const operatorList = useMemo(() => {
+    const operators = new Set(operationLogs.map((log) => log.operator));
+    return Array.from(operators);
+  }, [operationLogs]);
+
+  const filteredLogs = useMemo(() => {
+    return operationLogs.filter((log) => {
+      const matchType = filterType === 'all' || log.type === filterType;
+      const matchResult = filterResult === 'all' || log.result === filterResult;
+      const matchOperator = filterOperator === 'all' || log.operator === filterOperator;
+      
+      let matchDate = true;
+      if (filterDateRange && filterDateRange[0] && filterDateRange[1]) {
+        const logDate = dayjs(log.time, 'YYYY-MM-DD HH:mm:ss');
+        matchDate = logDate.isAfter(filterDateRange[0].startOf('day')) && 
+                    logDate.isBefore(filterDateRange[1].endOf('day'));
+      }
+      
+      return matchType && matchResult && matchOperator && matchDate;
+    });
+  }, [operationLogs, filterType, filterResult, filterOperator, filterDateRange]);
 
   const deviceStatusChart = {
     tooltip: { trigger: 'axis' },
@@ -133,6 +165,8 @@ export default function ReportCenter() {
           {t}
         </Space>
       ),
+      sorter: (a: OperationLog, b: OperationLog) => dayjs(a.time).valueOf() - dayjs(b.time).valueOf(),
+      defaultSortOrder: 'descend' as const,
     },
     {
       title: '操作人',
@@ -145,23 +179,37 @@ export default function ReportCenter() {
           {name}
         </Space>
       ),
+      filters: operatorList.map((op) => ({ text: op, value: op })),
+      onFilter: (value: boolean | React.Key, record: OperationLog) => record.operator === value,
     },
     {
       title: '操作类型',
       dataIndex: 'type',
       key: 'type',
-      width: 100,
-      render: (type: string) => <Tag color="blue">{type}</Tag>,
+      width: 120,
+      render: (type: string) => {
+        let color = 'blue';
+        if (type.includes('排期')) color = 'purple';
+        if (type.includes('巡检')) color = 'green';
+        if (type.includes('内容') || type.includes('素材')) color = 'cyan';
+        if (type.includes('维修')) color = 'orange';
+        if (type.includes('设备')) color = 'geekblue';
+        return <Tag color={color}>{type}</Tag>;
+      },
+      filters: operationTypeList.map((type) => ({ text: type, value: type })),
+      onFilter: (value: boolean | React.Key, record: OperationLog) => record.type === value,
     },
     {
       title: '操作对象',
       dataIndex: 'target',
       key: 'target',
+      ellipsis: true,
     },
     {
       title: '操作详情',
       dataIndex: 'detail',
       key: 'detail',
+      ellipsis: true,
     },
     {
       title: '结果',
@@ -174,11 +222,28 @@ export default function ReportCenter() {
         ) : (
           <Tag color="red" icon={<CloseCircleOutlined />}>失败</Tag>
         ),
+      filters: [
+        { text: '成功', value: 'success' },
+        { text: '失败', value: 'failed' },
+      ],
+      onFilter: (value: boolean | React.Key, record: OperationLog) => record.result === value,
     },
   ];
 
+  const handleReset = () => {
+    setFilterType('all');
+    setFilterResult('all');
+    setFilterOperator('all');
+    setFilterDateRange(null);
+    message.success('筛选条件已重置');
+  };
+
   const handleExport = (type: string) => {
     message.success(type + '报表已导出');
+  };
+
+  const handleExportLogs = () => {
+    message.success('已导出 ' + filteredLogs.length + ' 条操作日志');
   };
 
   return (
@@ -272,29 +337,77 @@ export default function ReportCenter() {
 
         {activeTab === 'operations' && (
           <div>
-            <div style={{ marginBottom: 16 }}>
-              <Space>
-                <Select defaultValue="all" style={{ width: 120 }} size="small">
-                  <Select.Option value="all">全部类型</Select.Option>
-                  <Select.Option value="设备控制">设备控制</Select.Option>
-                  <Select.Option value="排期控制">排期控制</Select.Option>
-                  <Select.Option value="故障告警">故障告警</Select.Option>
-                  <Select.Option value="巡检打卡">巡检打卡</Select.Option>
-                </Select>
-                <Select defaultValue="all" style={{ width: 120 }} size="small">
-                  <Select.Option value="all">全部结果</Select.Option>
-                  <Select.Option value="success">成功</Select.Option>
-                  <Select.Option value="failed">失败</Select.Option>
-                </Select>
+            <Card size="small" style={{ marginBottom: 16 }}>
+              <Space wrap size="middle">
+                <span style={{ color: '#666', fontWeight: 500 }}>
+                  <SearchOutlined style={{ marginRight: 4 }} />
+                  筛选条件:
+                </span>
+                <Select
+                  value={filterType}
+                  onChange={setFilterType}
+                  style={{ width: 150 }}
+                  size="small"
+                  allowClear
+                  options={[
+                    { value: 'all', label: '全部类型' },
+                    ...operationTypeList.map((type) => ({ value: type, label: type })),
+                  ]}
+                />
+                <Select
+                  value={filterResult}
+                  onChange={setFilterResult}
+                  style={{ width: 120 }}
+                  size="small"
+                  allowClear
+                  options={[
+                    { value: 'all', label: '全部结果' },
+                    { value: 'success', label: '成功' },
+                    { value: 'failed', label: '失败' },
+                  ]}
+                />
+                <Select
+                  value={filterOperator}
+                  onChange={setFilterOperator}
+                  style={{ width: 120 }}
+                  size="small"
+                  allowClear
+                  options={[
+                    { value: 'all', label: '全部操作人' },
+                    ...operatorList.map((op) => ({ value: op, label: op })),
+                  ]}
+                />
+                <RangePicker
+                  size="small"
+                  value={filterDateRange}
+                  onChange={(dates) => setFilterDateRange(dates as [dayjs.Dayjs, dayjs.Dayjs])}
+                  format="YYYY-MM-DD"
+                />
+                <Button size="small" icon={<ReloadOutlined />} onClick={handleReset}>
+                  重置
+                </Button>
+                <div style={{ flex: 1 }} />
+                <span style={{ color: '#666' }}>
+                  共 <span style={{ fontWeight: 'bold', color: '#1890ff' }}>{filteredLogs.length}</span> 条记录
+                </span>
+                <Button size="small" type="primary" icon={<DownloadOutlined />} onClick={handleExportLogs}>
+                  导出日志
+                </Button>
               </Space>
-            </div>
+            </Card>
 
             <Table
-              dataSource={operationLogs}
+              dataSource={filteredLogs}
               rowKey="id"
               size="small"
-              pagination={{ pageSize: 10 }}
+              pagination={{
+                pageSize: 10,
+                showSizeChanger: true,
+                showQuickJumper: true,
+                showTotal: (total) => `共 ${total} 条记录`,
+              }}
               columns={operationColumns}
+              scroll={{ x: 1000 }}
             />
           </div>
         )}

@@ -17,6 +17,7 @@ import {
   Timeline,
   Tooltip,
   Upload,
+  Form,
 } from 'antd';
 import {
   FolderOpenOutlined,
@@ -33,7 +34,10 @@ import {
   ArrowUpOutlined,
 } from '@ant-design/icons';
 import { useAppStore } from '@/store';
-import type { ContentItem } from '@/types';
+import type { ContentItem, ContentVersion } from '@/types';
+import dayjs from 'dayjs';
+
+const { TextArea } = Input;
 
 const typeIcons: Record<string, React.ReactNode> = {
   video: <VideoCameraOutlined />,
@@ -68,8 +72,15 @@ const statusNames: Record<string, string> = {
   archived: '已归档',
 };
 
+const typeThumbnails: Record<string, string> = {
+  video: 'https://trae-api-cn.mchost.guru/api/ide/v1/text_to_image?prompt=abstract%20video%20player%20interface%20dark%20theme&image_size=square',
+  image: 'https://trae-api-cn.mchost.guru/api/ide/v1/text_to_image?prompt=abstract%20gallery%20image%20frame%20artistic&image_size=square',
+  ppt: 'https://trae-api-cn.mchost.guru/api/ide/v1/text_to_image?prompt=abstract%20presentation%20slide%20professional&image_size=square',
+  interactive: 'https://trae-api-cn.mchost.guru/api/ide/v1/text_to_image?prompt=abstract%20interactive%20touch%20interface%20futuristic&image_size=square',
+};
+
 export default function ContentLibrary() {
-  const { contents, publishContent, rollbackContent } = useAppStore();
+  const { contents, publishContent, rollbackContent, addContent } = useAppStore();
   const [selectedContent, setSelectedContent] = useState<ContentItem | null>(null);
   const [previewVisible, setPreviewVisible] = useState(false);
   const [versionVisible, setVersionVisible] = useState(false);
@@ -77,6 +88,7 @@ export default function ContentLibrary() {
   const [filterType, setFilterType] = useState<string>('all');
   const [filterStatus, setFilterStatus] = useState<string>('all');
   const [searchText, setSearchText] = useState('');
+  const [uploadForm] = Form.useForm();
 
   const filteredContents = contents.filter((c) => {
     const matchType = filterType === 'all' || c.type === filterType;
@@ -103,8 +115,54 @@ export default function ContentLibrary() {
   const handleRollback = (version: string) => {
     if (selectedContent) {
       rollbackContent(selectedContent.id, version);
-      message.success(`已回退到版本 ${version}`);
+      message.success('已回退到版本 ' + version);
       setVersionVisible(false);
+      const updatedContent = contents.find((c) => c.id === selectedContent.id);
+      if (updatedContent) {
+        setSelectedContent(updatedContent);
+      }
+    }
+  };
+
+  const handleUpload = () => {
+    uploadForm.resetFields();
+    uploadForm.setFieldsValue({
+      type: 'video',
+      description: '',
+    });
+    setUploadVisible(true);
+  };
+
+  const handleSaveUpload = async () => {
+    try {
+      const values = await uploadForm.validateFields();
+      
+      const newVersion: ContentVersion = {
+        version: '1.0',
+        uploader: '当前值班员',
+        uploadTime: dayjs().format('YYYY-MM-DD HH:mm'),
+        size: Math.floor(Math.random() * 50 + 10) + 'MB',
+        note: '初始版本',
+      };
+
+      const newContent = {
+        name: values.name,
+        type: values.type,
+        description: values.description || '',
+        thumbnail: typeThumbnails[values.type],
+        version: '1.0',
+        status: 'draft' as const,
+        size: newVersion.size,
+        uploader: newVersion.uploader,
+        note: '初始版本',
+      };
+
+      addContent(newContent);
+      message.success('素材上传成功');
+      setUploadVisible(false);
+      uploadForm.resetFields();
+    } catch (error) {
+      console.error('表单验证失败:', error);
     }
   };
 
@@ -153,7 +211,7 @@ export default function ContentLibrary() {
                 { value: 'archived', label: '已归档' },
               ]}
             />
-            <Button type="primary" icon={<UploadOutlined />} size="small" onClick={() => setUploadVisible(true)}>
+            <Button type="primary" icon={<UploadOutlined />} size="small" onClick={handleUpload}>
               上传素材
             </Button>
           </Space>
@@ -257,6 +315,14 @@ export default function ContentLibrary() {
               </Card>
             </Col>
           ))}
+          {filteredContents.length === 0 && (
+            <Col span={24}>
+              <div style={{ textAlign: 'center', padding: '60px 0', color: '#999' }}>
+                <FolderOpenOutlined style={{ fontSize: 48, marginBottom: 12 }} />
+                <div>暂无符合条件的素材</div>
+              </div>
+            </Col>
+          )}
         </Row>
       </Card>
 
@@ -268,9 +334,13 @@ export default function ContentLibrary() {
           </Space>
         }
         open={previewVisible}
-        onCancel={() => setPreviewVisible(false)}
+        onCancel={() => {
+          setPreviewVisible(false);
+          setSelectedContent(null);
+        }}
         footer={null}
         width={800}
+        maskClosable={false}
       >
         {selectedContent && (
           <div>
@@ -300,13 +370,23 @@ export default function ContentLibrary() {
             </Descriptions>
             <div style={{ marginTop: 16, textAlign: 'right' }}>
               <Space>
-                <Button icon={<HistoryOutlined />} onClick={() => { setPreviewVisible(false); setVersionVisible(true); }}>
+                <Button icon={<HistoryOutlined />} onClick={() => {
+                  const current = contents.find((c) => c.id === selectedContent.id);
+                  if (current) {
+                    setSelectedContent(current);
+                  }
+                  setPreviewVisible(false);
+                  setVersionVisible(true);
+                }}>
                   查看版本
                 </Button>
                 {selectedContent.status !== 'published' && (
                   <Button type="primary" icon={<ArrowUpOutlined />} onClick={() => {
                     handlePublish(selectedContent.id);
-                    setPreviewVisible(false);
+                    const updated = contents.find((c) => c.id === selectedContent.id);
+                    if (updated) {
+                      setSelectedContent({ ...updated, status: 'published' });
+                    }
                   }}>
                     立即上架
                   </Button>
@@ -320,9 +400,13 @@ export default function ContentLibrary() {
       <Modal
         title="版本历史"
         open={versionVisible}
-        onCancel={() => setVersionVisible(false)}
+        onCancel={() => {
+          setVersionVisible(false);
+          setSelectedContent(null);
+        }}
         footer={null}
         width={600}
+        maskClosable={false}
       >
         {selectedContent && (
           <div>
@@ -367,18 +451,30 @@ export default function ContentLibrary() {
       <Modal
         title="上传素材"
         open={uploadVisible}
-        onCancel={() => setUploadVisible(false)}
-        onOk={() => {
-          message.success('素材上传成功');
+        onCancel={() => {
           setUploadVisible(false);
+          uploadForm.resetFields();
         }}
+        onOk={handleSaveUpload}
+        okText="上传"
+        cancelText="取消"
         width={500}
+        maskClosable={false}
+        destroyOnClose
       >
-        <Form layout="vertical">
-          <Form.Item label="素材名称" required>
+        <Form form={uploadForm} layout="vertical">
+          <Form.Item
+            label="素材名称"
+            name="name"
+            rules={[{ required: true, message: '请输入素材名称' }]}
+          >
             <Input placeholder="请输入素材名称" />
           </Form.Item>
-          <Form.Item label="素材类型" required>
+          <Form.Item
+            label="素材类型"
+            name="type"
+            rules={[{ required: true, message: '请选择素材类型' }]}
+          >
             <Select
               placeholder="请选择素材类型"
               options={[
@@ -389,17 +485,29 @@ export default function ContentLibrary() {
               ]}
             />
           </Form.Item>
-          <Form.Item label="上传文件" required>
-            <Upload.Dragger>
+          <Form.Item
+            label="上传文件"
+            name="file"
+            rules={[{ required: true, message: '请选择上传文件' }]}
+          >
+            <Upload.Dragger
+              beforeUpload={() => false}
+              maxCount={1}
+              onChange={(info) => {
+                if (info.fileList.length > 0) {
+                  uploadForm.setFieldsValue({ file: info.fileList[0].name });
+                }
+              }}
+            >
               <p className="ant-upload-drag-icon">
                 <UploadOutlined />
               </p>
               <p className="ant-upload-text">点击或拖拽文件到此处上传</p>
-              <p className="ant-upload-hint">支持单个或批量上传</p>
+              <p className="ant-upload-hint">支持单个文件上传</p>
             </Upload.Dragger>
           </Form.Item>
-          <Form.Item label="描述">
-            <Input.TextArea rows={3} placeholder="请输入素材描述" />
+          <Form.Item label="描述" name="description">
+            <TextArea rows={3} placeholder="请输入素材描述" />
           </Form.Item>
         </Form>
       </Modal>

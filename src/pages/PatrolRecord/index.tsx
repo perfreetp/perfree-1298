@@ -11,11 +11,14 @@ import {
   Select,
   message,
   List,
-  Timeline,
   Row,
   Col,
   Statistic,
   DatePicker,
+  Checkbox,
+  Radio,
+  Divider,
+  Tooltip,
 } from 'antd';
 import {
   CheckSquareOutlined,
@@ -27,15 +30,27 @@ import {
   ExclamationCircleOutlined,
   SettingOutlined,
   CalendarOutlined,
+  ToolOutlined,
+  SyncOutlined,
 } from '@ant-design/icons';
 import { useAppStore } from '@/store';
-import type { PatrolRecord, MaintenanceOrder } from '@/types';
+import type { PatrolRecord, MaintenanceOrder, PatrolDevice } from '@/types';
 import dayjs from 'dayjs';
 
 const { RangePicker } = DatePicker;
+const { TextArea } = Input;
 
 export default function PatrolRecord() {
-  const { patrolRecords, maintenanceOrders, devices, addPatrolRecord, createMaintenanceOrder } = useAppStore();
+  const {
+    patrolRecords,
+    maintenanceOrders,
+    devices,
+    deviceGroups,
+    addPatrolRecordWithOrders,
+    createMaintenanceOrder,
+    updateMaintenanceStatus,
+  } = useAppStore();
+
   const [activeTab, setActiveTab] = useState<'patrol' | 'maintenance'>('patrol');
   const [checkinModalVisible, setCheckinModalVisible] = useState(false);
   const [detailModalVisible, setDetailModalVisible] = useState(false);
@@ -43,6 +58,11 @@ export default function PatrolRecord() {
   const [maintDetailVisible, setMaintDetailVisible] = useState(false);
   const [selectedMaint, setSelectedMaint] = useState<MaintenanceOrder | null>(null);
   const [createMaintVisible, setCreateMaintVisible] = useState(false);
+  const [checkinForm] = Form.useForm();
+  const [maintForm] = Form.useForm();
+
+  const [patrolDevices, setPatrolDevices] = useState<PatrolDevice[]>([]);
+  const [selectedAreas, setSelectedAreas] = useState<string[]>([]);
 
   const patrolTypeNames: Record<string, string> = {
     morning: '早间巡检',
@@ -87,9 +107,41 @@ export default function PatrolRecord() {
   };
 
   const todayPatrols = patrolRecords.filter((r) => r.date === dayjs().format('YYYY-MM-DD'));
+  const abnormalDevicesCount = patrolDevices.filter((d) => d.status !== 'normal').length;
 
   const handleCheckin = () => {
+    const allDevices: PatrolDevice[] = devices.map((d) => ({
+      deviceId: d.id,
+      deviceName: d.name,
+      status: d.status === 'online' ? 'normal' : d.status === 'fault' ? 'fault' : 'offline',
+      note: '',
+      groupId: d.groupId,
+    }));
+    setPatrolDevices(allDevices);
+    setSelectedAreas(deviceGroups.map((g) => g.id));
+    checkinForm.resetFields();
+    checkinForm.setFieldsValue({
+      type: 'morning',
+      areas: deviceGroups.map((g) => g.id),
+      remark: '',
+    });
     setCheckinModalVisible(true);
+  };
+
+  const handleAreaChange = (areas: string[]) => {
+    setSelectedAreas(areas);
+  };
+
+  const handleDeviceStatusChange = (deviceId: string, status: 'normal' | 'fault' | 'offline') => {
+    setPatrolDevices((prev) =>
+      prev.map((d) => (d.deviceId === deviceId ? { ...d, status } : d))
+    );
+  };
+
+  const handleDeviceNoteChange = (deviceId: string, note: string) => {
+    setPatrolDevices((prev) =>
+      prev.map((d) => (d.deviceId === deviceId ? { ...d, note } : d))
+    );
   };
 
   const handleViewDetail = (record: PatrolRecord) => {
@@ -103,8 +155,93 @@ export default function PatrolRecord() {
   };
 
   const handleCreateMaint = () => {
+    maintForm.resetFields();
+    maintForm.setFieldsValue({
+      level: 'medium',
+      assignee: '未分配',
+    });
     setCreateMaintVisible(true);
   };
+
+  const handleCreateMaintFromAbnormal = (device: PatrolDevice) => {
+    maintForm.resetFields();
+    maintForm.setFieldsValue({
+      deviceId: device.deviceId,
+      deviceName: device.deviceName,
+      title: `${device.deviceName} - 维修工单`,
+      description: device.note || '巡检发现异常，需要维修',
+      level: device.status === 'fault' ? 'high' : 'medium',
+      assignee: '未分配',
+    });
+    setCreateMaintVisible(true);
+  };
+
+  const handleSaveCheckin = async () => {
+    try {
+      const values = await checkinForm.validateFields();
+      
+      const filteredDevices = patrolDevices.filter((d) =>
+        selectedAreas.includes(d.groupId || '')
+      );
+
+      const abnormalDevices = filteredDevices.filter((d) => d.status !== 'normal');
+
+      const recordData: Omit<PatrolRecord, 'id'> = {
+        date: dayjs().format('YYYY-MM-DD'),
+        time: dayjs().format('HH:mm'),
+        inspector: '当前值班员',
+        type: values.type,
+        status: abnormalDevices.length > 0 ? 'abnormal' : 'normal',
+        devices: filteredDevices,
+        remark: values.remark || '',
+        images: [],
+      };
+
+      addPatrolRecordWithOrders(recordData, abnormalDevices);
+
+      if (abnormalDevices.length > 0) {
+        message.success(
+          `巡检打卡成功，已生成 ${abnormalDevices.length} 张维修工单`
+        );
+      } else {
+        message.success('巡检打卡成功');
+      }
+
+      setCheckinModalVisible(false);
+      checkinForm.resetFields();
+    } catch (error) {
+      console.error('表单验证失败:', error);
+    }
+  };
+
+  const handleSaveMaint = async () => {
+    try {
+      const values = await maintForm.validateFields();
+      const device = devices.find((d) => d.id === values.deviceId);
+      
+      createMaintenanceOrder({
+        title: values.title,
+        deviceId: values.deviceId,
+        deviceName: device?.name || values.deviceName,
+        description: values.description,
+        level: values.level,
+        status: 'pending',
+        assignee: values.assignee,
+        creator: '值班员',
+        remark: values.remark || '',
+      });
+
+      message.success('工单已创建');
+      setCreateMaintVisible(false);
+      maintForm.resetFields();
+    } catch (error) {
+      console.error('表单验证失败:', error);
+    }
+  };
+
+  const filteredPatrolDevices = patrolDevices.filter((d) =>
+    selectedAreas.includes(d.groupId || '')
+  );
 
   const patrolColumns = [
     {
@@ -118,7 +255,7 @@ export default function PatrolRecord() {
       dataIndex: 'time',
       key: 'time',
       width: 100,
-      render: (t) => (
+      render: (t: string) => (
         <Space>
           <ClockCircleOutlined />
           {t}
@@ -130,14 +267,14 @@ export default function PatrolRecord() {
       dataIndex: 'type',
       key: 'type',
       width: 100,
-      render: (t) => <Tag color={patrolTypeColors[t]}>{patrolTypeNames[t]}</Tag>,
+      render: (t: string) => <Tag color={patrolTypeColors[t]}>{patrolTypeNames[t]}</Tag>,
     },
     {
       title: '巡检员',
       dataIndex: 'inspector',
       key: 'inspector',
       width: 100,
-      render: (name) => (
+      render: (name: string) => (
         <Space>
           <UserOutlined />
           {name}
@@ -149,7 +286,7 @@ export default function PatrolRecord() {
       dataIndex: 'status',
       key: 'status',
       width: 100,
-      render: (s) =>
+      render: (s: string) =>
         s === 'normal' ? (
           <Tag color="green" icon={<CheckCircleOutlined />}>正常</Tag>
         ) : (
@@ -160,7 +297,16 @@ export default function PatrolRecord() {
       title: '设备数',
       key: 'deviceCount',
       width: 80,
-      render: (_, record) => <span>{record.devices.length} 台</span>,
+      render: (_: unknown, record: PatrolRecord) => <span>{record.devices.length} 台</span>,
+    },
+    {
+      title: '异常数',
+      key: 'abnormalCount',
+      width: 80,
+      render: (_: unknown, record: PatrolRecord) => {
+        const count = record.devices.filter((d) => d.status !== 'normal').length;
+        return count > 0 ? <span style={{ color: '#f5222d', fontWeight: 'bold' }}>{count} 台</span> : <span>-</span>;
+      },
     },
     {
       title: '备注',
@@ -172,7 +318,7 @@ export default function PatrolRecord() {
       title: '操作',
       key: 'action',
       width: 100,
-      render: (_, record) => (
+      render: (_: unknown, record: PatrolRecord) => (
         <Button size="small" icon={<EyeOutlined />} onClick={() => handleViewDetail(record)}>
           详情
         </Button>
@@ -191,7 +337,7 @@ export default function PatrolRecord() {
       title: '标题',
       dataIndex: 'title',
       key: 'title',
-      render: (text) => <span style={{ fontWeight: 500 }}>{text}</span>,
+      render: (text: string) => <span style={{ fontWeight: 500 }}>{text}</span>,
     },
     {
       title: '设备',
@@ -204,14 +350,14 @@ export default function PatrolRecord() {
       dataIndex: 'level',
       key: 'level',
       width: 80,
-      render: (l) => <Tag color={maintLevelColors[l]}>{maintLevelNames[l]}</Tag>,
+      render: (l: string) => <Tag color={maintLevelColors[l]}>{maintLevelNames[l]}</Tag>,
     },
     {
       title: '状态',
       dataIndex: 'status',
       key: 'status',
       width: 100,
-      render: (s) => <Tag color={maintStatusColors[s]}>{maintStatusNames[s]}</Tag>,
+      render: (s: string) => <Tag color={maintStatusColors[s]}>{maintStatusNames[s]}</Tag>,
     },
     {
       title: '指派给',
@@ -228,11 +374,26 @@ export default function PatrolRecord() {
     {
       title: '操作',
       key: 'action',
-      width: 100,
-      render: (_, record) => (
-        <Button size="small" icon={<EyeOutlined />} onClick={() => handleViewMaintDetail(record)}>
-          详情
-        </Button>
+      width: 150,
+      render: (_: unknown, record: MaintenanceOrder) => (
+        <Space size="small">
+          <Button size="small" icon={<EyeOutlined />} onClick={() => handleViewMaintDetail(record)}>
+            详情
+          </Button>
+          {record.status === 'pending' && (
+            <Button
+              size="small"
+              type="primary"
+              icon={<SyncOutlined />}
+              onClick={() => {
+                updateMaintenanceStatus(record.id, 'processing');
+                message.success('工单已开始处理');
+              }}
+            >
+              处理
+            </Button>
+          )}
+        </Space>
       ),
     },
   ];
@@ -315,6 +476,7 @@ export default function PatrolRecord() {
             size="small"
             pagination={{ pageSize: 8 }}
             columns={patrolColumns}
+            scroll={{ x: 1000 }}
           />
         )}
 
@@ -325,6 +487,7 @@ export default function PatrolRecord() {
             size="small"
             pagination={{ pageSize: 8 }}
             columns={maintColumns}
+            scroll={{ x: 1000 }}
           />
         )}
       </Card>
@@ -333,33 +496,22 @@ export default function PatrolRecord() {
         title="巡检打卡"
         open={checkinModalVisible}
         onCancel={() => setCheckinModalVisible(false)}
-        onOk={() => {
-          addPatrolRecord({
-            date: dayjs().format('YYYY-MM-DD'),
-            time: dayjs().format('HH:mm'),
-            inspector: '当前值班员',
-            type: 'morning',
-            status: 'normal',
-            devices: devices.slice(0, 5).map((d) => ({
-              deviceId: d.id,
-              deviceName: d.name,
-              status: d.status === 'online' ? 'normal' : d.status === 'fault' ? 'fault' : 'offline',
-              note: '',
-            })),
-            remark: '巡检正常',
-            images: [],
-          });
-          message.success('巡检打卡成功');
-          setCheckinModalVisible(false);
-        }}
-        width={600}
+        onOk={handleSaveCheckin}
+        okText="提交打卡"
+        cancelText="取消"
+        width={800}
+        maskClosable={false}
+        okButtonProps={{ disabled: filteredPatrolDevices.length === 0 }}
       >
-        <Form layout="vertical">
+        <Form form={checkinForm} layout="vertical">
           <Row gutter={16}>
             <Col span={12}>
-              <Form.Item label="巡检类型">
+              <Form.Item
+                label="巡检类型"
+                name="type"
+                rules={[{ required: true, message: '请选择巡检类型' }]}
+              >
                 <Select
-                  defaultValue="morning"
                   options={[
                     { value: 'morning', label: '早间巡检' },
                     { value: 'afternoon', label: '午间巡检' },
@@ -370,27 +522,114 @@ export default function PatrolRecord() {
               </Form.Item>
             </Col>
             <Col span={12}>
-              <Form.Item label="巡检区域">
+              <Form.Item
+                label="巡检区域"
+                name="areas"
+                rules={[{ required: true, message: '请选择巡检区域' }]}
+              >
                 <Select
                   mode="multiple"
                   placeholder="请选择巡检区域"
-                  defaultValue={['group-1', 'group-2']}
-                  options={[
-                    { value: 'group-1', label: '一楼大厅' },
-                    { value: 'group-2', label: '二楼展厅A' },
-                    { value: 'group-3', label: '二楼展厅B' },
-                    { value: 'group-4', label: '三楼多功能厅' },
-                  ]}
+                  options={deviceGroups.map((g) => ({ value: g.id, label: g.name }))}
+                  onChange={handleAreaChange}
                 />
               </Form.Item>
             </Col>
           </Row>
-          <Form.Item label="巡检备注">
-            <Input.TextArea rows={3} placeholder="请输入巡检备注，如有异常请详细描述" />
-          </Form.Item>
-          <div style={{ color: '#999', fontSize: 12 }}>
-            提示：巡检打卡将记录当前时间和巡检人员信息
+
+          <Divider orientation="left" style={{ margin: '12px 0' }}>
+            <Space>
+              <span>设备检查</span>
+              {abnormalDevicesCount > 0 && (
+                <Tag color="red" icon={<ExclamationCircleOutlined />}>
+                  {abnormalDevicesCount} 台异常
+                </Tag>
+              )}
+            </Space>
+          </Divider>
+
+          <div style={{ maxHeight: 300, overflow: 'auto', marginBottom: 16 }}>
+            {filteredPatrolDevices.length === 0 ? (
+              <div style={{ textAlign: 'center', color: '#999', padding: 40 }}>
+                请先选择巡检区域
+              </div>
+            ) : (
+              <List
+                size="small"
+                dataSource={filteredPatrolDevices}
+                renderItem={(device) => (
+                  <List.Item
+                    key={device.deviceId}
+                    style={{
+                      padding: '12px 16px',
+                      background: device.status !== 'normal' ? '#fff1f0' : '#fff',
+                      borderLeft: device.status !== 'normal' ? '3px solid #f5222d' : 'none',
+                    }}
+                  >
+                    <List.Item.Meta
+                      title={device.deviceName}
+                      description={
+                        <Input
+                          size="small"
+                          placeholder="添加备注（可选）"
+                          value={device.note}
+                          onChange={(e) => handleDeviceNoteChange(device.deviceId, e.target.value)}
+                          style={{ width: 300 }}
+                        />
+                      }
+                    />
+                    <Space size="middle">
+                      <Radio.Group
+                        size="small"
+                        value={device.status}
+                        onChange={(e) => handleDeviceStatusChange(device.deviceId, e.target.value)}
+                      >
+                        <Radio.Button value="normal">正常</Radio.Button>
+                        <Radio.Button value="fault">故障</Radio.Button>
+                        <Radio.Button value="offline">离线</Radio.Button>
+                      </Radio.Group>
+                      {device.status !== 'normal' && (
+                        <Tooltip title="快速创建工单">
+                          <Button
+                            size="small"
+                            type="primary"
+                            danger
+                            icon={<ToolOutlined />}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleCreateMaintFromAbnormal(device);
+                            }}
+                          >
+                            转工单
+                          </Button>
+                        </Tooltip>
+                      )}
+                    </Space>
+                  </List.Item>
+                )}
+              />
+            )}
           </div>
+
+          <Form.Item label="巡检备注" name="remark">
+            <TextArea rows={2} placeholder="请输入巡检备注，如有异常请详细描述" />
+          </Form.Item>
+
+          {abnormalDevicesCount > 0 && (
+            <div
+              style={{
+                padding: '10px 12px',
+                background: '#fff1f0',
+                border: '1px solid #ffa39e',
+                borderRadius: 4,
+                color: '#cf1322',
+                fontSize: 12,
+              }}
+            >
+              <ExclamationCircleOutlined style={{ marginRight: 4 }} />
+              检测到 {abnormalDevicesCount} 台异常设备，提交后将自动生成对应维修工单
+            </div>
+          )}
         </Form>
       </Modal>
 
@@ -435,7 +674,9 @@ export default function PatrolRecord() {
             </div>
 
             <div style={{ marginBottom: 16 }}>
-              <div style={{ fontWeight: 'bold', marginBottom: 8 }}>设备检查情况 ({selectedRecord.devices.length} 台)</div>
+              <div style={{ fontWeight: 'bold', marginBottom: 8 }}>
+                设备检查情况 ({selectedRecord.devices.length} 台)
+              </div>
               <List
                 size="small"
                 bordered
@@ -524,56 +765,64 @@ export default function PatrolRecord() {
         title="创建维修工单"
         open={createMaintVisible}
         onCancel={() => setCreateMaintVisible(false)}
-        onOk={() => {
-          createMaintenanceOrder({
-            title: '设备维修',
-            deviceId: 'dev-1',
-            deviceName: '大厅主大屏',
-            description: '设备故障需要维修',
-            level: 'medium',
-            status: 'pending',
-            assignee: '未分配',
-            creator: '值班员',
-            remark: '',
-          });
-          message.success('工单已创建');
-          setCreateMaintVisible(false);
-        }}
+        onOk={handleSaveMaint}
+        okText="创建"
+        cancelText="取消"
         width={500}
+        maskClosable={false}
       >
-        <Form layout="vertical">
-          <Form.Item label="设备" required>
+        <Form form={maintForm} layout="vertical">
+          <Form.Item
+            label="设备"
+            name="deviceId"
+            rules={[{ required: true, message: '请选择设备' }]}
+          >
             <Select
               placeholder="请选择设备"
               options={devices.map((d) => ({ value: d.id, label: d.name }))}
             />
           </Form.Item>
-          <Form.Item label="标题" required>
+          <Form.Item
+            label="标题"
+            name="title"
+            rules={[{ required: true, message: '请输入工单标题' }]}
+          >
             <Input placeholder="请输入工单标题" />
           </Form.Item>
-          <Form.Item label="问题描述" required>
-            <Input.TextArea rows={4} placeholder="请详细描述问题" />
+          <Form.Item
+            label="问题描述"
+            name="description"
+            rules={[{ required: true, message: '请输入问题描述' }]}
+          >
+            <TextArea rows={4} placeholder="请详细描述问题" />
           </Form.Item>
-          <Form.Item label="紧急程度">
-            <Select
-              defaultValue="medium"
-              options={[
-                { value: 'urgent', label: '紧急' },
-                { value: 'high', label: '高' },
-                { value: 'medium', label: '中' },
-                { value: 'low', label: '低' },
-              ]}
-            />
-          </Form.Item>
-          <Form.Item label="指派给">
-            <Select
-              defaultValue="未分配"
-              options={[
-                { value: '未分配', label: '未分配' },
-                { value: '张技术', label: '张技术' },
-                { value: '李技术', label: '李技术' },
-              ]}
-            />
+          <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item label="紧急程度" name="level">
+                <Select
+                  options={[
+                    { value: 'urgent', label: '紧急' },
+                    { value: 'high', label: '高' },
+                    { value: 'medium', label: '中' },
+                    { value: 'low', label: '低' },
+                  ]}
+                />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item label="指派给" name="assignee">
+                <Select
+                  options={[
+                    { value: '未分配', label: '未分配' },
+                    { value: '张技术', label: '张技术' },
+                    { value: '李技术', label: '李技术' },
+                  ]}
+                />
+              </Form.Item>
+            </Col>
+          </Row>
+          <Form.Item label="备注" name="remark">
+            <TextArea rows={2} placeholder="其他备注信息（可选）" />
           </Form.Item>
         </Form>
       </Modal>

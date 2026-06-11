@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import React, { useState } from 'react';
 import {
   Card,
   Row,
@@ -14,6 +14,7 @@ import {
   Tooltip,
   Divider,
   Select,
+  Alert,
 } from 'antd';
 import {
   PoweroffOutlined,
@@ -72,9 +73,11 @@ export default function ExhibitionList() {
   } = useAppStore();
 
   const [selectedGroup, setSelectedGroup] = useState<string>('all');
-  const [selectedDevice, setSelectedDevice] = useState<Device | null>(null);
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
   const [controlModalVisible, setControlModalVisible] = useState(false);
   const [switchModalVisible, setSwitchModalVisible] = useState(false);
+
+  const selectedDevice = selectedDeviceId ? devices.find((d) => d.id === selectedDeviceId) || null : null;
 
   const filteredDevices =
     selectedGroup === 'all'
@@ -82,7 +85,7 @@ export default function ExhibitionList() {
       : devices.filter((d) => d.groupId === selectedGroup);
 
   const handleDeviceClick = (device: Device) => {
-    setSelectedDevice(device);
+    setSelectedDeviceId(device.id);
     setControlModalVisible(true);
   };
 
@@ -179,7 +182,7 @@ export default function ExhibitionList() {
                         size="small"
                         checked={device.power}
                         disabled={device.status === 'fault' || device.status === 'offline'}
-                        onClick={(e) => {
+                        onChange={(checked, e) => {
                           e.stopPropagation();
                           toggleDevicePower(device.id);
                         }}
@@ -207,7 +210,7 @@ export default function ExhibitionList() {
       >
         {selectedDevice && (
           <div>
-            <Space style={{ marginBottom: 16 }} direction="vertical" size="middle" style={{ width: '100%' }}>
+            <Space direction="vertical" size="middle" style={{ width: '100%' }}>
               <div>
                 <div style={{ marginBottom: 8, color: '#666' }}>设备状态</div>
                 <Space>
@@ -238,7 +241,7 @@ export default function ExhibitionList() {
                   <Switch
                     checked={selectedDevice.power}
                     disabled={selectedDevice.status === 'fault' || selectedDevice.status === 'offline'}
-                    onChange={() => toggleDevicePower(selectedDevice.id)}
+                    onChange={() => toggleDevicePower(selectedDeviceId!)}
                   />
                 </div>
               </div>
@@ -253,7 +256,7 @@ export default function ExhibitionList() {
                     max={100}
                     value={selectedDevice.volume}
                     disabled={!selectedDevice.power}
-                    onChange={(value) => setDeviceVolume(selectedDevice.id, value)}
+                    onChange={(value) => setDeviceVolume(selectedDeviceId!, value)}
                   />
                 </div>
               )}
@@ -268,7 +271,7 @@ export default function ExhibitionList() {
                     max={100}
                     value={selectedDevice.brightness}
                     disabled={!selectedDevice.power}
-                    onChange={(value) => setDeviceBrightness(selectedDevice.id, value)}
+                    onChange={(value) => setDeviceBrightness(selectedDeviceId!, value)}
                   />
                 </div>
               )}

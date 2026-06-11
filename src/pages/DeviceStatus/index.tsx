@@ -167,14 +167,14 @@ export default function DeviceStatus() {
       title: '状态',
       key: 'status',
       width: 80,
-      render: (_, record: AlarmItem) =>
+      render: (_: unknown, record: AlarmItem) =>
         record.handled ? <Tag color="green">已处理</Tag> : <Tag color="red">未处理</Tag>,
     },
     {
       title: '操作',
       key: 'action',
       width: 100,
-      render: (_, record: AlarmItem) => (
+      render: (_: unknown, record: AlarmItem) => (
         <Button size="small" type="primary" onClick={() => handleAlarmClick(record)} disabled={record.handled}>
           处理
         </Button>

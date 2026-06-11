@@ -16,6 +16,7 @@ import {
   Tooltip,
   Row,
   Col,
+  Popconfirm,
 } from 'antd';
 import {
   PlayCircleOutlined,
@@ -32,13 +33,25 @@ import dayjs from 'dayjs';
 import type { ScheduleItem, Playlist } from '@/types';
 
 export default function Schedule() {
-  const { schedules, playlists, exhibitions, devices, toggleSchedule, syncPlaylist, contents } =
-    useAppStore();
+  const {
+    schedules,
+    playlists,
+    exhibitions,
+    devices,
+    toggleSchedule,
+    syncPlaylist,
+    contents,
+    addSchedule,
+    updateSchedule,
+    deleteSchedule,
+  } = useAppStore();
+
   const [activeTab, setActiveTab] = useState<'schedule' | 'playlist'>('schedule');
   const [modalVisible, setModalVisible] = useState(false);
   const [selectedSchedule, setSelectedSchedule] = useState<ScheduleItem | null>(null);
   const [playlistModalVisible, setPlaylistModalVisible] = useState(false);
   const [selectedPlaylist, setSelectedPlaylist] = useState<Playlist | null>(null);
+  const [form] = Form.useForm();
 
   const repeatNames: Record<string, string> = {
     once: '单次',
@@ -63,17 +76,70 @@ export default function Schedule() {
 
   const handleAddSchedule = () => {
     setSelectedSchedule(null);
+    form.resetFields();
+    form.setFieldsValue({
+      name: '',
+      startTime: dayjs('09:00', 'HH:mm'),
+      endTime: dayjs('17:00', 'HH:mm'),
+      repeat: 'workday',
+      exhibitionId: exhibitions[0]?.id,
+      deviceIds: [],
+      contentIds: [],
+    });
     setModalVisible(true);
   };
 
   const handleEditSchedule = (record: ScheduleItem) => {
     setSelectedSchedule(record);
+    form.setFieldsValue({
+      name: record.name,
+      startTime: dayjs(record.startTime, 'HH:mm'),
+      endTime: dayjs(record.endTime, 'HH:mm'),
+      repeat: record.repeat,
+      exhibitionId: record.exhibitionId,
+      deviceIds: record.deviceIds,
+      contentIds: record.contentIds,
+    });
     setModalVisible(true);
+  };
+
+  const handleDeleteSchedule = (scheduleId: string) => {
+    deleteSchedule(scheduleId);
+    message.success('排期已删除');
   };
 
   const handleSyncPlaylist = (playlistId: string) => {
     syncPlaylist(playlistId);
     message.success('播放列表已同步到设备');
+  };
+
+  const handleSaveSchedule = async () => {
+    try {
+      const values = await form.validateFields();
+      const scheduleData = {
+        name: values.name,
+        startTime: values.startTime.format('HH:mm'),
+        endTime: values.endTime.format('HH:mm'),
+        repeat: values.repeat,
+        exhibitionId: values.exhibitionId,
+        deviceIds: values.deviceIds || [],
+        contentIds: values.contentIds || [],
+        status: selectedSchedule ? selectedSchedule.status : 'scheduled',
+      };
+
+      if (selectedSchedule) {
+        updateSchedule(selectedSchedule.id, scheduleData);
+        message.success('排期已更新');
+      } else {
+        addSchedule(scheduleData);
+        message.success('排期已创建');
+      }
+
+      setModalVisible(false);
+      form.resetFields();
+    } catch (error) {
+      console.error('表单验证失败:', error);
+    }
   };
 
   const scheduleColumns = [
@@ -95,7 +161,7 @@ export default function Schedule() {
     {
       title: '播放时间',
       key: 'time',
-      render: (_, record: ScheduleItem) => (
+      render: (_: unknown, record: ScheduleItem) => (
         <Space>
           <ClockCircleOutlined />
           {record.startTime} - {record.endTime}
@@ -111,7 +177,7 @@ export default function Schedule() {
     {
       title: '设备数',
       key: 'deviceCount',
-      render: (_, record: ScheduleItem) => <span>{record.deviceIds.length} 台</span>,
+      render: (_: unknown, record: ScheduleItem) => <span>{record.deviceIds.length} 台</span>,
     },
     {
       title: '状态',
@@ -126,8 +192,9 @@ export default function Schedule() {
     {
       title: '操作',
       key: 'action',
-      width: 200,
-      render: (_, record: ScheduleItem) => (
+      width: 240,
+      fixed: 'right' as const,
+      render: (_: unknown, record: ScheduleItem) => (
         <Space size="small">
           <Switch
             size="small"
@@ -135,6 +202,7 @@ export default function Schedule() {
             onChange={() => toggleSchedule(record.id)}
             checkedChildren="运行"
             unCheckedChildren="暂停"
+            disabled={record.status === 'completed'}
           />
           <Tooltip title="编辑">
             <Button size="small" icon={<EditOutlined />} onClick={() => handleEditSchedule(record)} />
@@ -142,6 +210,18 @@ export default function Schedule() {
           <Tooltip title="同步到设备">
             <Button size="small" icon={<SyncOutlined />} onClick={() => handleSyncPlaylist(record.id)} />
           </Tooltip>
+          <Popconfirm
+            title="确认删除"
+            description="确定要删除这个排期吗？"
+            onConfirm={() => handleDeleteSchedule(record.id)}
+            okText="删除"
+            cancelText="取消"
+            okButtonProps={{ danger: true }}
+          >
+            <Tooltip title="删除">
+              <Button size="small" danger icon={<DeleteOutlined />} />
+            </Tooltip>
+          </Popconfirm>
         </Space>
       ),
     },
@@ -172,8 +252,9 @@ export default function Schedule() {
           <Table
             dataSource={schedules}
             rowKey="id"
-            pagination={false}
+            pagination={{ pageSize: 8 }}
             columns={scheduleColumns}
+            scroll={{ x: 900 }}
           />
         )}
 
@@ -238,32 +319,50 @@ export default function Schedule() {
       <Modal
         title={selectedSchedule ? '编辑排期' : '新建排期'}
         open={modalVisible}
-        onCancel={() => setModalVisible(false)}
-        onOk={() => {
+        onCancel={() => {
           setModalVisible(false);
-          message.success(selectedSchedule ? '排期已更新' : '排期已创建');
+          form.resetFields();
         }}
+        onOk={handleSaveSchedule}
+        okText="保存"
+        cancelText="取消"
         width={600}
+        maskClosable={false}
       >
-        <Form layout="vertical">
-          <Form.Item label="排期名称" required>
-            <Input placeholder="请输入排期名称" defaultValue={selectedSchedule?.name} />
+        <Form form={form} layout="vertical">
+          <Form.Item
+            label="排期名称"
+            name="name"
+            rules={[{ required: true, message: '请输入排期名称' }]}
+          >
+            <Input placeholder="请输入排期名称" />
           </Form.Item>
           <Row gutter={16}>
             <Col span={12}>
-              <Form.Item label="开始时间">
-                <TimePicker style={{ width: '100%' }} defaultValue={dayjs(selectedSchedule?.startTime, 'HH:mm')} format="HH:mm" />
+              <Form.Item
+                label="开始时间"
+                name="startTime"
+                rules={[{ required: true, message: '请选择开始时间' }]}
+              >
+                <TimePicker style={{ width: '100%' }} format="HH:mm" />
               </Form.Item>
             </Col>
             <Col span={12}>
-              <Form.Item label="结束时间">
-                <TimePicker style={{ width: '100%' }} defaultValue={dayjs(selectedSchedule?.endTime, 'HH:mm')} format="HH:mm" />
+              <Form.Item
+                label="结束时间"
+                name="endTime"
+                rules={[{ required: true, message: '请选择结束时间' }]}
+              >
+                <TimePicker style={{ width: '100%' }} format="HH:mm" />
               </Form.Item>
             </Col>
           </Row>
-          <Form.Item label="重复周期">
+          <Form.Item
+            label="重复周期"
+            name="repeat"
+            rules={[{ required: true, message: '请选择重复周期' }]}
+          >
             <Select
-              defaultValue={selectedSchedule?.repeat || 'workday'}
               options={[
                 { value: 'once', label: '单次' },
                 { value: 'daily', label: '每天' },
@@ -272,18 +371,31 @@ export default function Schedule() {
               ]}
             />
           </Form.Item>
-          <Form.Item label="关联展览">
+          <Form.Item
+            label="关联展览"
+            name="exhibitionId"
+            rules={[{ required: true, message: '请选择关联展览' }]}
+          >
             <Select
-              defaultValue={selectedSchedule?.exhibitionId}
               options={exhibitions.map((e) => ({ value: e.id, label: e.name }))}
             />
           </Form.Item>
-          <Form.Item label="播放设备">
+          <Form.Item
+            label="播放设备"
+            name="deviceIds"
+            rules={[{ required: true, message: '请至少选择一台播放设备' }]}
+          >
             <Select
               mode="multiple"
-              defaultValue={selectedSchedule?.deviceIds}
               options={devices.map((d) => ({ value: d.id, label: d.name }))}
               placeholder="请选择播放设备"
+            />
+          </Form.Item>
+          <Form.Item label="播放内容" name="contentIds">
+            <Select
+              mode="multiple"
+              options={contents.map((c) => ({ value: c.id, label: c.name }))}
+              placeholder="请选择播放内容（可选）"
             />
           </Form.Item>
         </Form>
