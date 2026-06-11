@@ -69,6 +69,8 @@ export interface ScheduleItem {
   startTime: string;
   endTime: string;
   repeat: 'once' | 'daily' | 'weekly' | 'workday';
+  date?: string;
+  weekday?: number;
   deviceIds: string[];
   contentIds: string[];
   status: 'scheduled' | 'running' | 'completed' | 'paused';
@@ -157,6 +159,7 @@ export interface OperationLog {
   target: string;
   detail: string;
   result: 'success' | 'failed';
+  deviceIds?: string[];
 }
 
 export interface DailyReport {

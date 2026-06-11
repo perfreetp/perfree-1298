@@ -176,6 +176,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       target: device?.name || deviceId,
       detail: `${newPower ? '开启' : '关闭'}设备`,
       result: 'success',
+      deviceIds: [deviceId],
     });
   },
 
@@ -193,6 +194,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       target: device?.name || deviceId,
       detail: `调整音量到 ${volume}%`,
       result: 'success',
+      deviceIds: [deviceId],
     });
   },
 
@@ -210,6 +212,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       target: device?.name || deviceId,
       detail: `调整亮度到 ${brightness}%`,
       result: 'success',
+      deviceIds: [deviceId],
     });
   },
 
@@ -239,6 +242,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       target: group.name,
       detail: `一键${power ? '开启' : '关闭'}组内 ${group.deviceIds.length} 台设备`,
       result: 'success',
+      deviceIds: group.deviceIds,
     });
   },
 
@@ -260,6 +264,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       target: device?.name || deviceId,
       detail: `设置状态为 ${status}`,
       result: 'success',
+      deviceIds: [deviceId],
     });
   },
 
@@ -301,10 +306,20 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   rollbackContent: (contentId: string, version: string) => {
     const content = get().contents.find((c) => c.id === contentId);
+    const targetVersion = content?.versions.find((v) => v.version === version);
+
+    let targetStatus: ContentItem['status'] = 'draft';
+    if (targetVersion?.reviewStatus === 'approved') {
+      targetStatus = 'published';
+    } else if (targetVersion?.reviewStatus === 'pending') {
+      targetStatus = 'pending_review';
+    } else if (targetVersion?.reviewStatus === 'rejected') {
+      targetStatus = 'draft';
+    }
 
     set((state) => ({
       contents: state.contents.map((c) =>
-        c.id === contentId ? { ...c, version, status: 'published' as const } : c
+        c.id === contentId ? { ...c, version, status: targetStatus } : c
       ),
     }));
 
@@ -333,9 +348,10 @@ export const useAppStore = create<AppState>((set, get) => ({
           uploader: '值班员',
           size: contentData.size,
           note: contentData.note || '初始版本',
+          reviewStatus: 'pending' as const,
         },
       ],
-      status: 'draft' as const,
+      status: 'pending_review' as const,
       thumbnail: contentData.thumbnail,
       uploadTime: dayjs().format('YYYY-MM-DD HH:mm:ss'),
       uploader: '值班员',
@@ -393,7 +409,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         c.id === contentId
           ? {
               ...c,
-              status: 'draft' as const,
+              status: 'published' as const,
               versions: c.versions.map((v) =>
                 v.version === c.version
                   ? {
@@ -553,6 +569,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       target: schedule?.name || scheduleId,
       detail: `同步排期到设备，展览: ${exhibition?.name || ''}，时间: ${schedule?.startTime}-${schedule?.endTime}，设备(${schedule?.deviceIds.length}台): ${deviceNames || ''}`,
       result: 'success',
+      deviceIds: schedule?.deviceIds || [],
     });
   },
 
@@ -587,6 +604,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       target: playlist?.name || playlistId,
       detail: `同步播放列表到 ${playlist?.deviceIds.length} 台设备`,
       result: 'success',
+      deviceIds: playlist?.deviceIds || [],
     });
   },
 
@@ -673,6 +691,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       target: order.deviceName,
       detail: `创建维修工单，紧急程度：${order.level}，指派给：${order.assignee}`,
       result: 'success',
+      deviceIds: [order.deviceId],
     });
   },
 
@@ -698,6 +717,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       target: order?.deviceName || orderId,
       detail: `更新工单状态为：${status}`,
       result: 'success',
+      deviceIds: order ? [order.deviceId] : [],
     });
   },
 
@@ -761,6 +781,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       target: record.type,
       detail: `完成巡检打卡，检查 ${record.devices.length} 台设备，发现 ${abnormalDevices.length} 个异常${skippedCount > 0 ? `，其中 ${skippedCount} 台已手动转单，自动生成 ${filteredAbnormal.length} 张工单` : '，已自动生成维修工单'}`,
       result: 'success',
+      deviceIds: record.devices.map((d) => d.deviceId),
     });
   },
 

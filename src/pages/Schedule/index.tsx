@@ -87,8 +87,27 @@ export default function Schedule() {
     paused: '已暂停',
   };
 
+  const isScheduleActiveOnDate = (schedule: ScheduleItem, date: dayjs.Dayjs) => {
+    const weekday = date.day();
+    const dateStr = date.format('YYYY-MM-DD');
+
+    switch (schedule.repeat) {
+      case 'daily':
+        return true;
+      case 'workday':
+        return weekday >= 1 && weekday <= 5;
+      case 'weekly':
+        return schedule.weekday !== undefined && schedule.weekday === weekday;
+      case 'once':
+        return schedule.date === dateStr;
+      default:
+        return true;
+    }
+  };
+
   const filteredSchedules = useMemo(() => {
     let result = [...schedules];
+    result = result.filter((s) => isScheduleActiveOnDate(s, selectedDate));
     if (selectedGroupId !== 'all') {
       const group = deviceGroups.find((g) => g.id === selectedGroupId);
       if (group) {
@@ -98,7 +117,7 @@ export default function Schedule() {
       }
     }
     return result.sort((a, b) => a.startTime.localeCompare(b.startTime));
-  }, [schedules, selectedGroupId, deviceGroups]);
+  }, [schedules, selectedDate, selectedGroupId, deviceGroups]);
 
   const timelineData = useMemo(() => {
     const hours = [];
@@ -336,12 +355,6 @@ export default function Schedule() {
 
   const renderTimelineView = () => (
     <div>
-      <div style={{ marginBottom: 16, display: 'flex', alignItems: 'center', gap: 16 }}>
-        <DatePicker value={selectedDate} onChange={setSelectedDate} style={{ width: 180 }} />
-        <span style={{ color: '#666' }}>
-          共 {filteredSchedules.length} 条排期
-        </span>
-      </div>
       <div
         style={{
           position: 'relative',
@@ -466,17 +479,26 @@ export default function Schedule() {
           )
         }
       >
-        {activeTab === 'schedule' && viewMode === 'list' && (
-          <Table
-            dataSource={filteredSchedules}
-            rowKey="id"
-            pagination={{ pageSize: 8 }}
-            columns={scheduleColumns}
-            scroll={{ x: 900 }}
-          />
+        {activeTab === 'schedule' && (
+          <div>
+            <div style={{ marginBottom: 16, display: 'flex', alignItems: 'center', gap: 16 }}>
+              <DatePicker value={selectedDate} onChange={setSelectedDate} style={{ width: 180 }} />
+              <span style={{ color: '#666' }}>
+                共 {filteredSchedules.length} 条排期
+              </span>
+            </div>
+            {viewMode === 'list' && (
+              <Table
+                dataSource={filteredSchedules}
+                rowKey="id"
+                pagination={{ pageSize: 8 }}
+                columns={scheduleColumns}
+                scroll={{ x: 900 }}
+              />
+            )}
+            {viewMode === 'timeline' && renderTimelineView()}
+          </div>
         )}
-
-        {activeTab === 'schedule' && viewMode === 'timeline' && renderTimelineView()}
 
         {activeTab === 'playlist' && (
           <Row gutter={[16, 16]}>

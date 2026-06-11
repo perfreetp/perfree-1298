@@ -75,6 +75,7 @@ export default function PatrolRecord() {
   const [patrolDevices, setPatrolDevices] = useState<PatrolDevice[]>([]);
   const [selectedRouteId, setSelectedRouteId] = useState<string>('');
   const [manualOrderDeviceIds, setManualOrderDeviceIds] = useState<string[]>([]);
+  const [currentMaintFromPatrol, setCurrentMaintFromPatrol] = useState<string | null>(null);
 
   const patrolTypeNames: Record<string, string> = {
     morning: '早间巡检',
@@ -222,8 +223,8 @@ export default function PatrolRecord() {
       level: device.status === 'fault' ? 'high' : 'medium',
       assignee: '未分配',
     });
+    setCurrentMaintFromPatrol(device.deviceId);
     setCreateMaintVisible(true);
-    setManualOrderDeviceIds((prev) => [...prev, device.deviceId]);
   };
 
   const handleSaveCheckin = async () => {
@@ -243,7 +244,9 @@ export default function PatrolRecord() {
         images: [],
       };
 
-      const skipIds = values.routeId ? manualOrderDeviceIds : [];
+      const skipIds = manualOrderDeviceIds.filter((id) =>
+        abnormalDevices.some((d) => d.deviceId === id)
+      );
       addPatrolRecordWithOrders(recordData, abnormalDevices, skipIds);
 
       const autoGenCount = abnormalDevices.length - manualOrderDeviceIds.filter((id) =>
@@ -286,6 +289,11 @@ export default function PatrolRecord() {
         remark: values.remark || '',
         source: 'manual',
       });
+
+      if (currentMaintFromPatrol && currentMaintFromPatrol === values.deviceId) {
+        setManualOrderDeviceIds((prev) => [...prev, values.deviceId]);
+        setCurrentMaintFromPatrol(null);
+      }
 
       message.success('工单已创建');
       setCreateMaintVisible(false);

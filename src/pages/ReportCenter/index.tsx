@@ -119,10 +119,18 @@ export default function ReportCenter() {
       targetDeviceIds = devices.map((d) => d.id);
     }
 
+    const hasDeviceFilter = trackDeviceId !== 'all' || trackGroupId !== 'all';
+
     const inDateRange = (time: string) => {
       if (!trackDateRange || !trackDateRange[0] || !trackDateRange[1]) return true;
       const t = dayjs(time, 'YYYY-MM-DD HH:mm:ss');
       return t.isAfter(trackDateRange[0].startOf('day')) && t.isBefore(trackDateRange[1].endOf('day'));
+    };
+
+    const logHasDevice = (logDeviceIds?: string[]) => {
+      if (!hasDeviceFilter) return true;
+      if (!logDeviceIds || logDeviceIds.length === 0) return false;
+      return logDeviceIds.some((id) => targetDeviceIds.includes(id));
     };
 
     operationLogs.forEach((log) => {
@@ -133,6 +141,7 @@ export default function ReportCenter() {
         log.type.includes('巡检') ||
         log.type.includes('维修');
       if (!isDeviceRelated) return;
+      if (!logHasDevice(log.deviceIds)) return;
       items.push({
         id: 'op-' + log.id,
         time: log.time,
@@ -151,7 +160,7 @@ export default function ReportCenter() {
 
     maintenanceOrders.forEach((order) => {
       if (!inDateRange(order.createdAt)) return;
-      if (targetDeviceIds.length > 0 && !targetDeviceIds.includes(order.deviceId)) return;
+      if (hasDeviceFilter && !targetDeviceIds.includes(order.deviceId)) return;
       items.push({
         id: 'mo-' + order.id,
         time: order.createdAt,
@@ -163,8 +172,24 @@ export default function ReportCenter() {
       });
     });
 
+    patrolRecords.forEach((record) => {
+      if (!inDateRange(record.date + ' ' + record.time)) return;
+      if (hasDeviceFilter) {
+        const hasMatch = record.devices.some((d) => targetDeviceIds.includes(d.deviceId));
+        if (!hasMatch) return;
+      }
+      items.push({
+        id: 'pr-' + record.id,
+        time: record.date + ' ' + record.time,
+        type: 'patrol',
+        title: '巡检打卡 - ' + record.type,
+        description: `${record.inspector} 完成巡检，检查 ${record.devices.length} 台设备，${record.status === 'normal' ? '全部正常' : '发现异常'}`,
+        status: record.status === 'normal' ? 'success' : 'pending',
+      });
+    });
+
     return items.sort((a, b) => dayjs(b.time).valueOf() - dayjs(a.time).valueOf());
-  }, [operationLogs, maintenanceOrders, devices, deviceGroups, trackDeviceId, trackGroupId, trackDateRange]);
+  }, [operationLogs, maintenanceOrders, patrolRecords, devices, deviceGroups, trackDeviceId, trackGroupId, trackDateRange]);
 
   const deviceStatusChart = {
     tooltip: { trigger: 'axis' },

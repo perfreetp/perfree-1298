@@ -449,6 +449,7 @@ export const mockSchedules: ScheduleItem[] = [
     startTime: '10:00',
     endTime: '16:00',
     repeat: 'weekly',
+    weekday: 6,
     deviceIds: ['dev-1', 'dev-2'],
     contentIds: ['cont-4'],
     status: 'scheduled',

@@ -444,19 +444,6 @@ export default function ContentLibrary() {
                         提交审核
                       </Button>
                     )}
-                    {content.status === 'draft' && (
-                      <Button
-                        size="small"
-                        type="primary"
-                        icon={<ArrowUpOutlined />}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handlePublish(content.id);
-                        }}
-                      >
-                        上架
-                      </Button>
-                    )}
                     {content.status === 'pending_review' && (
                       <Button
                         size="small"
@@ -558,13 +545,6 @@ export default function ContentLibrary() {
                     }}
                   >
                     提交审核
-                  </Button>
-                )}
-                {selectedContent.status === 'draft' && (
-                  <Button type="primary" icon={<ArrowUpOutlined />} onClick={() => {
-                    handlePublish(selectedContent.id);
-                  }}>
-                    立即上架
                   </Button>
                 )}
                 {selectedContent.status === 'pending_review' && (
